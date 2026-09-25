@@ -1,0 +1,37 @@
+# secrets & local config — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+service-account*.json
+credentials*.json
+token*.json
+
+# data — never commit contacts or exports
+.uploads/
+uploads/
+exports/
+*.xlsx
+*.xls
+*.csv
+!backend/tests/fixtures/*.csv
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# node / next
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# os / editors
+.DS_Store
+.idea/
+.vscode/
