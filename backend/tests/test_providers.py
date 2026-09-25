@@ -45,3 +45,15 @@ def test_sms_requires_dlt_template_and_maps_fields():
     import pytest
     with pytest.raises(ValueError):
         sms_payload(req)
+
+
+def test_platform_config_normalises_db_url_and_derives_secrets(monkeypatch):
+    from app.core.config import LOCAL_JWT, Settings
+    monkeypatch.setenv("VERCEL", "1")
+    url = "postgres://u:p@host/db?sslmode=require"
+    s = Settings(app_env="local", database_url=url, jwt_secret=LOCAL_JWT)
+    assert s.database_url == "postgresql+psycopg://u:p@host/db?sslmode=require"
+    assert s.app_env == "production" and s.jwt_secret != LOCAL_JWT and len(s.jwt_secret) == 64
+    assert s.internal_token != s.jwt_secret
+    assert Settings(app_env="local", database_url=url).jwt_secret == s.jwt_secret  # stable per database
+    assert Settings(app_env="local", database_url="postgres://u:p@other/db").jwt_secret != s.jwt_secret

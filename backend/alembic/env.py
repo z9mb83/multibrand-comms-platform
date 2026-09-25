@@ -20,7 +20,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    engine = create_engine(get_settings().database_url)
+    engine = create_engine(get_settings().database_url, connect_args={"prepare_threshold": None})
     with engine.connect() as conn:
         context.configure(connection=conn, target_metadata=target_metadata, compare_type=True)
         with context.begin_transaction():

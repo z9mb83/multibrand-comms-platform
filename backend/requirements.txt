@@ -14,7 +14,3 @@ openpyxl==3.1.5
 pandas==3.0.2
 xlrd==2.0.2
 tzdata==2026.4
-# Google Cloud (used only when TASK_BACKEND=cloud_tasks / gsm: secret refs / OIDC checks)
-google-cloud-secret-manager>=2.20
-google-cloud-tasks>=2.16
-google-auth>=2.30

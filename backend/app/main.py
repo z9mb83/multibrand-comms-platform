@@ -10,7 +10,8 @@ from app.services.common import DomainError
 def create_app() -> FastAPI:
     s = get_settings()
     if s.app_env == "production":
-        if s.jwt_secret.startswith("local-dev-only") or s.internal_token == "local-internal-token":
+        from app.core.config import LOCAL_INTERNAL, LOCAL_JWT
+        if s.jwt_secret == LOCAL_JWT or s.internal_token == LOCAL_INTERNAL:
             raise RuntimeError("Refusing to start: set JWT_SECRET and INTERNAL_TOKEN from Secret Manager")
     app = FastAPI(title="Multi-Brand Communication Platform", version="0.1.0")
     app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in s.cors_origins.split(",") if o.strip()],

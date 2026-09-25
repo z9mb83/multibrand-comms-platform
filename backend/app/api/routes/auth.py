@@ -6,7 +6,8 @@ from app.api.deps import accessible_brand_ids, brand_role, current_user, require
 from app.core.db import get_db
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models import Brand, User
-from app.schemas.api import LoginIn, MeOut, TokenOut, UserCreate, UserOut
+from app.schemas.api import LoginIn, MeOut, SetupIn, TokenOut, UserCreate, UserOut
+from app.services import bootstrap
 from app.services.common import audit, now_utc
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -21,6 +22,20 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
     audit(db, "auth.login", user_id=user.id)
     db.commit()
     return TokenOut(access_token=create_access_token(user.id))
+
+
+@router.get("/setup-status")
+def setup_status(db: Session = Depends(get_db)):
+    return {"needs_setup": bootstrap.needs_setup(db)}
+
+
+@router.post("/setup", response_model=TokenOut, status_code=201)
+def setup(body: SetupIn, db: Session = Depends(get_db)):
+    """First-run only: creates the Super Admin chosen by the operator. Disabled once any user exists."""
+    admin = bootstrap.create_first_admin(db, email=body.email, full_name=body.full_name, password=body.password,
+                                         with_brands=body.create_brands)
+    db.commit()
+    return TokenOut(access_token=create_access_token(admin.id))
 
 
 @router.get("/me", response_model=MeOut)

@@ -124,3 +124,21 @@ def test_whatsapp_webhook(client, db, world):
                                                                 "type": "text", "text": {"body": "Interested!"}}]}}]}]}
     r = client.post("/webhooks/whatsapp", json=payload).json()
     assert r["received"] == 1
+
+
+def test_first_run_setup_only_once(client, db):
+    assert client.get("/api/auth/setup-status").json() == {"needs_setup": True}
+    body = {"email": "Owner@Brand.io", "full_name": "Owner", "password": "a-strong-passw0rd", "create_brands": True}
+    r = client.post("/api/auth/setup", json=body)
+    assert r.status_code == 201
+    h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    me = client.get("/api/auth/me", headers=h).json()
+    assert me["is_super_admin"] and me["email"] == "owner@brand.io" and len(me["brands"]) == 5
+    assert client.get("/api/auth/setup-status").json() == {"needs_setup": False}
+    assert client.post("/api/auth/setup", json={**body, "email": "x@y.io"}).status_code == 409
+    assert client.post("/api/auth/login", json={"email": "owner@brand.io", "password": "a-strong-passw0rd"}).status_code == 200
+
+
+def test_setup_rejects_short_password(client):
+    r = client.post("/api/auth/setup", json={"email": "a@b.io", "full_name": "A", "password": "short"})
+    assert r.status_code == 422

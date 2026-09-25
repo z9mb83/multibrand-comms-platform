@@ -10,7 +10,6 @@ from openpyxl import Workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.models import Brand, Campaign, ImportBatch, ImportRow, OutboundMessage, SenderAccount, Suppression
 from app.models.enums import CampaignStatus, Channel, MessageStatus, RoutingMode
 from app.services.common import DomainError, audit, local_tz, normalize_email, normalize_phone, now_utc, parse_bool
@@ -65,25 +64,26 @@ def detect_mapping(columns: list[str], extra_aliases: dict[str, list[str]] | Non
     return mapping
 
 
-def read_workbook(path: str, filename: str) -> dict[str, pd.DataFrame]:
+def read_workbook(data: bytes, filename: str) -> dict[str, pd.DataFrame]:
     ext = os.path.splitext(filename.lower())[1]
-    if ext == ".csv":
-        return {"CSV": pd.read_csv(path, dtype=str, keep_default_na=False)}
-    if ext in (".xlsx", ".xlsm"):
-        return pd.read_excel(path, sheet_name=None, dtype=str, keep_default_na=False, engine="openpyxl")
-    if ext == ".xls":
-        return pd.read_excel(path, sheet_name=None, dtype=str, keep_default_na=False, engine="xlrd")
+    buf = io.BytesIO(data)
+    try:
+        if ext == ".csv":
+            return {"CSV": pd.read_csv(buf, dtype=str, keep_default_na=False)}
+        if ext in (".xlsx", ".xlsm"):
+            return pd.read_excel(buf, sheet_name=None, dtype=str, keep_default_na=False, engine="openpyxl")
+        if ext == ".xls":
+            return pd.read_excel(buf, sheet_name=None, dtype=str, keep_default_na=False, engine="xlrd")
+    except DomainError:
+        raise
+    except Exception as exc:
+        raise DomainError(f"Could not read the file: {exc}") from exc
     raise DomainError("Unsupported file type; upload .xlsx, .xls or .csv")
 
 
 def upload(db: Session, *, filename: str, data: bytes, user_id: int, default_brand_id: int | None) -> ImportBatch:
-    s = get_settings()
     digest = hashlib.sha256(data).hexdigest()
-    os.makedirs(s.upload_dir, exist_ok=True)
-    path = os.path.join(s.upload_dir, f"{digest}{os.path.splitext(filename)[1].lower()}")
-    with open(path, "wb") as fh:
-        fh.write(data)
-    sheets = read_workbook(path, filename)
+    sheets = read_workbook(data, filename)
     info = []
     for name, df in sheets.items():
         cols = [str(c) for c in df.columns]
@@ -92,7 +92,7 @@ def upload(db: Session, *, filename: str, data: bytes, user_id: int, default_bra
     prior = db.scalars(select(ImportBatch).where(ImportBatch.file_hash == digest, ImportBatch.status == "committed")
                        .order_by(ImportBatch.id)).first()
     batch = ImportBatch(uploaded_by=user_id, default_brand_id=default_brand_id, filename=filename, file_hash=digest,
-                        storage_path=path, sheets=info, duplicate_of_batch_id=prior.id if prior else None,
+                        storage_path="db", file_data=data, sheets=info, duplicate_of_batch_id=prior.id if prior else None,
                         status="uploaded", mapping={}, options={}, counts={}, selected_sheets=[])
     db.add(batch)
     db.flush()
@@ -160,7 +160,9 @@ def preview(db: Session, batch: ImportBatch, *, sheets: list[str], mapping: dict
     sender_lookup = {(s.brand_id, s.channel, s.address.lower()): s for s in senders}
 
     db.query(ImportRow).filter(ImportRow.batch_id == batch.id).delete()
-    wb = read_workbook(batch.storage_path, batch.filename)
+    if batch.file_data is None:
+        raise DomainError("original file is no longer stored; upload it again", 409)
+    wb = read_workbook(batch.file_data, batch.filename)
     seen: set[str] = set()
     counts = {"total": 0, "valid": 0, "invalid": 0, "duplicate": 0, "skipped": 0, "with_message": 0}
     for sheet in sheets:
@@ -357,6 +359,7 @@ def commit(db: Session, batch: ImportBatch, user_id: int, allow_duplicate_file: 
         r.status = "queued"
         queued += 1
     batch.status, batch.committed_at = "committed", now_utc()
+    batch.file_data = None  # keep only the validated rows, not the raw contact file
     batch.counts = {**batch.counts, "imported": imported, "queued_for_approval": queued,
                     "campaign_ids": [c.id for c in campaigns.values()]}
     audit(db, "import.committed", user_id=user_id, entity_type="import_batch", entity_id=batch.id, **batch.counts)

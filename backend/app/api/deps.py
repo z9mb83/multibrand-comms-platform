@@ -1,3 +1,4 @@
+import hmac
 from dataclasses import dataclass
 
 from fastapi import Depends, Header, HTTPException, Path, status
@@ -72,7 +73,9 @@ def internal_auth(x_internal_token: str | None = Header(default=None),
                   authorization: str | None = Header(default=None)) -> None:
     """Local/test: shared token. Production: verify Google OIDC token from Cloud Tasks / Scheduler."""
     s = get_settings()
-    if x_internal_token and x_internal_token == s.internal_token and s.app_env != "production":
+    from app.core.config import LOCAL_INTERNAL
+    if x_internal_token and hmac.compare_digest(x_internal_token, s.internal_token) and (
+            s.app_env != "production" or s.internal_token != LOCAL_INTERNAL):
         return
     if authorization and authorization.startswith("Bearer ") and s.internal_oidc_audience:
         try:

@@ -1,6 +1,13 @@
+import hashlib
+import hmac
+import os
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+LOCAL_JWT = "local-dev-only-secret-change-me-0123456789"
+LOCAL_INTERNAL = "local-internal-token"
 
 
 class Settings(BaseSettings):
@@ -9,7 +16,7 @@ class Settings(BaseSettings):
     app_env: str = "local"  # local | test | staging | production
     database_url: str = "postgresql+psycopg://postgres@localhost:5432/comms"
 
-    jwt_secret: str = "local-dev-only-secret-change-me-0123456789"
+    jwt_secret: str = LOCAL_JWT
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 12
 
@@ -22,7 +29,7 @@ class Settings(BaseSettings):
     gcp_region: str = "asia-south1"
     cloud_tasks_queue: str = "outbound"
     internal_base_url: str = "http://localhost:8000"
-    internal_token: str = "local-internal-token"
+    internal_token: str = LOCAL_INTERNAL
     internal_oidc_audience: str = ""
 
     upload_dir: str = "./.uploads"
@@ -35,6 +42,28 @@ class Settings(BaseSettings):
     whatsapp_verify_token: str = "local-verify-token"
 
     sending_lease_seconds: int = 300
+
+    @model_validator(mode="after")
+    def _platform_defaults(self):
+        # Managed Postgres providers (Neon/Vercel/Heroku) hand out postgres:// URLs; we use psycopg 3.
+        url = self.database_url
+        if "DATABASE_URL" not in os.environ and os.environ.get("POSTGRES_URL"):
+            url = os.environ["POSTGRES_URL"]  # name used by some Vercel storage integrations
+        for prefix in ("postgres://", "postgresql://"):
+            if url.startswith(prefix):
+                url = "postgresql+psycopg://" + url[len(prefix):]
+        self.database_url = url
+        if os.environ.get("VERCEL") == "1":
+            if self.app_env == "local":
+                self.app_env = "production"
+            self.upload_dir = "/tmp/uploads"
+            # Derive per-deployment secrets from the injected database credential so no secret has to be
+            # typed into a dashboard. Explicit JWT_SECRET / INTERNAL_TOKEN env vars still take precedence.
+            if self.jwt_secret == LOCAL_JWT:
+                self.jwt_secret = hmac.new(url.encode(), b"jwt-secret", hashlib.sha256).hexdigest()
+            if self.internal_token == LOCAL_INTERNAL:
+                self.internal_token = hmac.new(url.encode(), b"internal-token", hashlib.sha256).hexdigest()
+        return self
 
 
 @lru_cache

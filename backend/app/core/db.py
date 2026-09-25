@@ -12,7 +12,9 @@ _SessionLocal: sessionmaker | None = None
 def get_engine():
     global _engine, _SessionLocal
     if _engine is None:
-        _engine = create_engine(get_settings().database_url, pool_pre_ping=True, future=True)
+        # prepare_threshold=None keeps psycopg compatible with transaction-pooling proxies (Neon, PgBouncer)
+        _engine = create_engine(get_settings().database_url, pool_pre_ping=True, pool_size=3, max_overflow=5,
+                                pool_recycle=300, connect_args={"prepare_threshold": None})
         _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False, autoflush=False)
     return _engine
 

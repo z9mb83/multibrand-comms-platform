@@ -1,0 +1,4 @@
+# Google Cloud extras (Cloud Tasks, Secret Manager refs, OIDC checks) — used by the Cloud Run image
+google-cloud-secret-manager>=2.20
+google-cloud-tasks>=2.16
+google-auth>=2.30

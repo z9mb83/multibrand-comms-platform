@@ -13,6 +13,13 @@ class LoginIn(BaseModel):
     password: str
 
 
+class SetupIn(BaseModel):
+    email: EmailStr
+    full_name: str = Field(min_length=1)
+    password: str = Field(min_length=10)
+    create_brands: bool = True
+
+
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"

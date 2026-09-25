@@ -1,4 +1,5 @@
-export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Empty = same origin (requests go through the Next.js /api proxy). Set NEXT_PUBLIC_API_URL to call the API directly.
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
 const TOKEN_KEY = "comms_token";
 
@@ -43,7 +44,10 @@ export async function api<T = unknown>(path: string, init: RequestInit & { json?
     let msg = res.statusText;
     try {
       const data = await res.json();
-      msg = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+      if (typeof data.detail === "string") msg = data.detail;
+      else if (Array.isArray(data.detail))
+        msg = data.detail.map((d: { loc?: string[]; msg: string }) => `${d.loc?.slice(-1)[0] ?? "field"}: ${d.msg}`).join("; ");
+      else msg = JSON.stringify(data.detail);
     } catch {
       /* non-JSON error */
     }

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import DateTime, ForeignKey, Integer, LargeBinary, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,6 +16,8 @@ class ImportBatch(TimestampMixin, Base):
     filename: Mapped[str] = mapped_column(String(255))
     file_hash: Mapped[str] = mapped_column(String(64), index=True)
     storage_path: Mapped[str] = mapped_column(String(500))
+    # Original file bytes (serverless hosts have no persistent disk). Cleared after commit.
+    file_data: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
     status: Mapped[str] = mapped_column(String(20), default="uploaded")  # uploaded|previewed|committed|cancelled
     duplicate_of_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id", ondelete="SET NULL"))
     sheets: Mapped[list] = mapped_column(JSONB, default=list)  # [{name, columns, rows, detected_mapping}]
