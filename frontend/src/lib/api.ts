@@ -36,7 +36,9 @@ export async function api<T = unknown>(path: string, init: RequestInit & { json?
     body = JSON.stringify(init.json);
   }
   const res = await fetch(`${API_URL}/api${path}`, { ...init, headers, body });
-  if (res.status === 401 && typeof window !== "undefined" && !path.startsWith("/auth/login")) {
+  // An expired/invalid session sends you back to sign-in; a wrong password or code does not.
+  const signInStep = /^\/auth\/(login|otp|setup|providers|setup-status|mfa)/.test(path);
+  if (res.status === 401 && typeof window !== "undefined" && token && !signInStep) {
     setToken(null);
     window.location.href = "/login";
   }

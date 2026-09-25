@@ -43,6 +43,25 @@ class Settings(BaseSettings):
 
     sending_lease_seconds: int = 300
 
+    # Public URL of the dashboard (used for the Google OAuth redirect: <PUBLIC_APP_URL>/api/auth/google/callback)
+    public_app_url: str = "http://localhost:3000"
+
+    # Sign in with Google (disabled unless both are set)
+    google_client_id: str = ""
+    google_client_secret: str = ""
+
+    # Transactional email for sign-in codes (separate from marketing senders).
+    # MAILER: "log" (dev: code is only logged), "smtp", or "resend"
+    mailer: str = "log"
+    mail_from: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    resend_api_key: str = ""
+    otp_ttl_minutes: int = 10
+    otp_max_attempts: int = 5
+
     @model_validator(mode="after")
     def _platform_defaults(self):
         # Empty or template placeholder values (e.g. auto-imported from .env.example) count as unset.
@@ -62,6 +81,10 @@ class Settings(BaseSettings):
             self.internal_token = LOCAL_INTERNAL
         if unset(self.default_timezone):
             self.default_timezone = "Asia/Kolkata"
+        if unset(self.mailer) or self.mailer not in ("log", "smtp", "resend"):
+            self.mailer = "log"
+        if unset(self.google_client_id) or unset(self.google_client_secret):
+            self.google_client_id = self.google_client_secret = ""
         if unset(self.default_country_code):
             self.default_country_code = "+91"
         # Managed Postgres providers (Neon/Vercel/Heroku) hand out postgres:// URLs; we use psycopg 3.

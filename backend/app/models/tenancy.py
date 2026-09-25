@@ -32,8 +32,28 @@ class User(TimestampMixin, Base):
     is_super_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Sign in with Google: stable Google account id, linked on first Google sign-in by verified email
+    google_sub: Mapped[str | None] = mapped_column(String(64), unique=True)
+    # Optional second step: one-time code emailed after password / Google sign-in
+    mfa_email_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     memberships: Mapped[list["BrandMembership"]] = relationship(back_populates="user")
+
+
+class AuthChallenge(Base):
+    """Short-lived email one-time code. Only a salted hash of the code is stored."""
+
+    __tablename__ = "auth_challenges"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    purpose: Mapped[str] = mapped_column(String(20))  # login | enable_mfa
+    code_hash: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(default=0)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    method: Mapped[str] = mapped_column(String(20), default="password")  # password | google
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
 class BrandMembership(TimestampMixin, Base):

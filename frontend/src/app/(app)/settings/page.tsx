@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { useApp, usePoll } from "@/components/app-context";
+import { SecurityCard } from "@/components/security-card";
 import { ErrorNote, PageHeader } from "@/components/shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,8 +25,8 @@ export default function SettingsPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => { if (data) setS(data); }, [data]);
-  if (me && !me.is_super_admin) return (<><PageHeader title="Settings" /><p className="text-sm text-muted-foreground">Master settings are Super Admin only.</p></>);
-  if (!s) return <PageHeader title="Settings" />;
+  if (me && !me.is_super_admin) return (<><PageHeader title="Settings" /><SecurityCard /></>);
+  if (!s) return (<><PageHeader title="Settings" /><SecurityCard /></>);
 
   const set = <K extends keyof S>(k: K, v: S[K]) => setS({ ...s, [k]: v });
   async function save(e: React.FormEvent) {
@@ -38,6 +39,7 @@ export default function SettingsPage() {
     <>
       <PageHeader title="Master Control Center" description="Reporting and notification settings for the Super Admin. Independent of marketing sender rotation." />
       <ErrorNote error={error || err} />
+      <SecurityCard />
       <form onSubmit={save} className="grid gap-5 lg:grid-cols-2">
         <Card>
           <CardHeader><CardTitle>Master contact</CardTitle></CardHeader>

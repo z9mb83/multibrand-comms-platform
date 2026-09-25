@@ -25,6 +25,28 @@ class TokenOut(BaseModel):
     token_type: str = "bearer"
 
 
+class LoginOut(BaseModel):
+    """Either a token, or (when the user opted into email codes) a challenge to complete."""
+    access_token: str | None = None
+    token_type: str = "bearer"
+    mfa_required: bool = False
+    challenge_id: str | None = None
+    email_hint: str | None = None
+
+
+class OtpVerifyIn(BaseModel):
+    challenge_id: str
+    code: str = Field(min_length=6, max_length=6)
+
+
+class ChallengeIn(BaseModel):
+    challenge_id: str
+
+
+class MfaStartIn(BaseModel):
+    action: str = Field(pattern="^(enable|disable)$")
+
+
 class UserOut(ORM):
     id: int
     email: str
@@ -34,6 +56,8 @@ class UserOut(ORM):
 
 class MeOut(UserOut):
     brands: list[dict]
+    mfa_email_enabled: bool = False
+    google_linked: bool = False
 
 
 class UserCreate(BaseModel):
