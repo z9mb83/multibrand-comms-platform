@@ -1,0 +1,63 @@
+name: Deploy to Cloud Run
+
+# Manual until GCP resources and Workload Identity Federation are set up (see infra/README.md).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION || 'asia-south1' }}
+  REPO: comms
+  SQL_INSTANCE: ${{ vars.CLOUD_SQL_INSTANCE }}   # project:region:instance
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push images
+        run: |
+          gcloud auth configure-docker $REGION-docker.pkg.dev --quiet
+          API_IMG=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/api:${{ github.sha }}
+          WEB_IMG=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/web:${{ github.sha }}
+          docker build -t $API_IMG backend
+          docker build -t $WEB_IMG --build-arg NEXT_PUBLIC_API_URL=${{ vars.API_PUBLIC_URL }} frontend
+          docker push $API_IMG
+          docker push $WEB_IMG
+          echo "API_IMG=$API_IMG" >> $GITHUB_ENV
+          echo "WEB_IMG=$WEB_IMG" >> $GITHUB_ENV
+
+      - name: Run database migrations (Cloud Run job)
+        run: |
+          gcloud run jobs deploy comms-migrate --image $API_IMG --region $REGION \
+            --set-cloudsql-instances $SQL_INSTANCE \
+            --service-account ${{ vars.GCP_RUNTIME_SA }} \
+            --set-secrets DATABASE_URL=database-url:latest \
+            --command alembic --args upgrade,head
+          gcloud run jobs execute comms-migrate --region $REGION --wait
+
+      - name: Deploy API
+        run: |
+          gcloud run deploy comms-api --image $API_IMG --region $REGION \
+            --service-account ${{ vars.GCP_RUNTIME_SA }} \
+            --set-cloudsql-instances $SQL_INSTANCE \
+            --allow-unauthenticated \
+            --set-env-vars APP_ENV=production,PROVIDER_MODE=live,TASK_BACKEND=cloud_tasks,GCP_PROJECT=$PROJECT_ID,GCP_REGION=$REGION,CLOUD_TASKS_QUEUE=outbound,INTERNAL_BASE_URL=${{ vars.API_PUBLIC_URL }},INTERNAL_OIDC_AUDIENCE=${{ vars.API_PUBLIC_URL }},CORS_ORIGINS=${{ vars.WEB_PUBLIC_URL }},WHATSAPP_APP_SECRET_REF=gsm:projects/$PROJECT_ID/secrets/whatsapp-app-secret/versions/latest \
+            --set-secrets DATABASE_URL=database-url:latest,JWT_SECRET=jwt-secret:latest,INTERNAL_TOKEN=internal-token:latest,WHATSAPP_VERIFY_TOKEN=whatsapp-verify-token:latest
+
+      - name: Deploy web
+        run: |
+          gcloud run deploy comms-web --image $WEB_IMG --region $REGION --allow-unauthenticated
