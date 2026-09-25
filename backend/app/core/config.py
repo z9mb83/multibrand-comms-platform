@@ -45,8 +45,29 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _platform_defaults(self):
+        # Empty or template placeholder values (e.g. auto-imported from .env.example) count as unset.
+        def unset(v: str) -> bool:
+            v = (v or "").strip().lower()
+            return not v or v.startswith("replace") or v.startswith("change-me") or v == "replace-me"
+
+        if unset(self.app_env):
+            self.app_env = "local"
+        if unset(self.provider_mode) or self.provider_mode not in ("mock", "live"):
+            self.provider_mode = "mock"
+        if unset(self.task_backend) or self.task_backend not in ("inline", "cloud_tasks"):
+            self.task_backend = "inline"
+        if unset(self.jwt_secret):
+            self.jwt_secret = LOCAL_JWT
+        if unset(self.internal_token):
+            self.internal_token = LOCAL_INTERNAL
+        if unset(self.default_timezone):
+            self.default_timezone = "Asia/Kolkata"
+        if unset(self.default_country_code):
+            self.default_country_code = "+91"
         # Managed Postgres providers (Neon/Vercel/Heroku) hand out postgres:// URLs; we use psycopg 3.
         url = self.database_url
+        if "localhost" in url and os.environ.get("VERCEL") == "1" and os.environ.get("POSTGRES_URL"):
+            url = os.environ["POSTGRES_URL"]  # a copied local placeholder must never win on Vercel
         if "DATABASE_URL" not in os.environ and os.environ.get("POSTGRES_URL"):
             url = os.environ["POSTGRES_URL"]  # name used by some Vercel storage integrations
         for prefix in ("postgres://", "postgresql://"):
