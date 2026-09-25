@@ -57,3 +57,13 @@ def test_platform_config_normalises_db_url_and_derives_secrets(monkeypatch):
     assert s.internal_token != s.jwt_secret
     assert Settings(app_env="local", database_url=url).jwt_secret == s.jwt_secret  # stable per database
     assert Settings(app_env="local", database_url="postgres://u:p@other/db").jwt_secret != s.jwt_secret
+
+
+def test_placeholder_env_values_are_treated_as_unset(monkeypatch):
+    from app.core.config import LOCAL_JWT, Settings
+    monkeypatch.setenv("VERCEL", "1")
+    s = Settings(app_env="", provider_mode="", task_backend="", database_url="postgres://u:p@h/db",
+                 jwt_secret="replace-with-a-long-random-string-at-least-32-chars", internal_token="replace-with-a-random-token")
+    assert s.app_env == "production" and s.provider_mode == "mock" and s.task_backend == "inline"
+    assert s.jwt_secret not in (LOCAL_JWT, "replace-with-a-long-random-string-at-least-32-chars") and len(s.jwt_secret) == 64
+    assert not s.internal_token.startswith("replace")
