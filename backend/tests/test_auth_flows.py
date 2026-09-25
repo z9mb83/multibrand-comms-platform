@@ -151,17 +151,26 @@ def test_google_links_existing_user_by_verified_email(db, google_on):
     u = make_user(db)
     state, binding, _ = _start()
     got = auth_flows.google_callback(db, code="c", state=state, binding=binding, verify=_claims(),
-                                     exchange=lambda c: "tok")
+                                     exchange=lambda c: {"id_token": "tok"})
     assert got.id == u.id and got.google_sub == "g-123"
 
 
-def test_google_never_creates_accounts(db, google_on):
+def test_google_never_creates_accounts_once_an_owner_exists(db, google_on):
+    make_user(db, email="owner@brand.io")
     state, binding, _ = _start()
     with pytest.raises(DomainError) as e:
         auth_flows.google_callback(db, code="c", state=state, binding=binding, verify=_claims(email="stranger@x.io"),
-                                   exchange=lambda c: "tok")
+                                   exchange=lambda c: {"id_token": "tok"})
     assert e.value.status_code == 403
-    assert db.query(User).count() == 0
+    assert db.query(User).count() == 1
+
+
+def test_first_google_account_becomes_owner_on_new_install(db, google_on):
+    state, binding, _ = _start()
+    u = auth_flows.google_callback(db, code="c", state=state, binding=binding, verify=_claims(email="Admin@99m.com"),
+                                   exchange=lambda c: {"id_token": "tok"})
+    db.commit()
+    assert u.is_super_admin and u.email == "admin@99m.com" and u.google_sub == "g-123"
 
 
 def test_google_rejects_unverified_email(db, google_on):
@@ -169,17 +178,17 @@ def test_google_rejects_unverified_email(db, google_on):
     state, binding, _ = _start()
     with pytest.raises(DomainError):
         auth_flows.google_callback(db, code="c", state=state, binding=binding, verify=_claims(verified=False),
-                                   exchange=lambda c: "tok")
+                                   exchange=lambda c: {"id_token": "tok"})
 
 
 def test_google_state_must_match_browser_and_signature(db, google_on):
     make_user(db)
     state, binding, _ = _start()
     with pytest.raises(DomainError):  # callback finished in a different browser (no/other cookie)
-        auth_flows.google_callback(db, code="c", state=state, binding="other", verify=_claims(), exchange=lambda c: "t")
+        auth_flows.google_callback(db, code="c", state=state, binding="other", verify=_claims(), exchange=lambda c: {"id_token": "t"})
     with pytest.raises(DomainError):  # forged state
         auth_flows.google_callback(db, code="c", state=state[:-2] + "xx", binding=binding, verify=_claims(),
-                                   exchange=lambda c: "t")
+                                   exchange=lambda c: {"id_token": "t"})
 
 
 def test_google_account_mismatch_is_refused(db, google_on):
@@ -187,7 +196,7 @@ def test_google_account_mismatch_is_refused(db, google_on):
     state, binding, _ = _start()
     with pytest.raises(DomainError) as e:
         auth_flows.google_callback(db, code="c", state=state, binding=binding, verify=_claims(sub="g-other"),
-                                   exchange=lambda c: "t")
+                                   exchange=lambda c: {"id_token": "t"})
     assert "different Google account" in str(e.value)
 
 
@@ -199,7 +208,7 @@ def test_google_callback_route_with_mfa_redirects_to_code_step(client, db, googl
     state, binding, _ = _start()
     orig = auth_flows.google_callback
     monkeypatch.setattr(auth_flows, "google_callback",
-                        lambda db, **kw: orig(db, **kw, verify=_claims(), exchange=lambda c: "tok"))
+                        lambda db, **kw: orig(db, **kw, verify=_claims(), exchange=lambda c: {"id_token": "tok"}))
     client.cookies.set("g_bind", binding, path="/api/auth/google")
     r = client.get("/api/auth/google/callback", params={"code": "c", "state": state}, follow_redirects=False)
     assert r.status_code == 302 and r.headers["location"].startswith("/login?mfa=")
@@ -211,7 +220,7 @@ def test_google_callback_route_without_mfa_returns_token_in_fragment(client, db,
     state, binding, _ = _start()
     orig = auth_flows.google_callback
     monkeypatch.setattr(auth_flows, "google_callback",
-                        lambda db, **kw: orig(db, **kw, verify=_claims(), exchange=lambda c: "tok"))
+                        lambda db, **kw: orig(db, **kw, verify=_claims(), exchange=lambda c: {"id_token": "tok"}))
     client.cookies.set("g_bind", binding, path="/api/auth/google")
     r = client.get("/api/auth/google/callback", params={"code": "c", "state": state}, follow_redirects=False)
     assert r.headers["location"].startswith("/login#token=")

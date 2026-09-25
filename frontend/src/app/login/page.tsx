@@ -7,7 +7,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Field, Input } from "@/components/ui/input";
 import { api, setToken } from "@/lib/api";
 
-type Mode = "loading" | "login" | "setup" | "code";
+type Step = "loading" | "start" | "code" | "password" | "mfa" | "setup-password";
+type Providers = { google: boolean; email_codes_available: boolean; needs_owner: boolean };
 type LoginOut = { access_token: string | null; mfa_required: boolean; challenge_id: string | null; email_hint: string | null };
 
 function GoogleIcon() {
@@ -22,13 +23,12 @@ function GoogleIcon() {
 }
 
 export default function LoginPage() {
-  const [mode, setMode] = useState<Mode>("loading");
-  const [google, setGoogle] = useState(false);
+  const [step, setStep] = useState<Step>("loading");
+  const [prov, setProv] = useState<Providers>({ google: false, email_codes_available: false, needs_owner: false });
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [brands, setBrands] = useState(true);
   const [challenge, setChallenge] = useState<string | null>(null);
   const [hint, setHint] = useState<string | null>(null);
   const [code, setCode] = useState("");
@@ -37,7 +37,6 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    // Return from Google: token in the URL fragment, or a code step / error in the query string
     const hash = new URLSearchParams(window.location.hash.slice(1));
     const q = new URLSearchParams(window.location.search);
     if (hash.get("token")) {
@@ -46,70 +45,73 @@ export default function LoginPage() {
       return;
     }
     if (q.get("error")) setError(q.get("error"));
-    if (q.get("mfa")) {
-      setChallenge(q.get("mfa"));
-      setHint(q.get("hint"));
-      setMode("code");
-    }
+    const mfa = q.get("mfa");
     if (q.toString()) window.history.replaceState(null, "", "/login");
-    api<{ google: boolean }>("/auth/providers").then((p) => setGoogle(p.google)).catch(() => {});
-    if (q.get("mfa")) return;
-    api<{ needs_setup: boolean }>("/auth/setup-status")
-      .then((r) => setMode(r.needs_setup ? "setup" : "login"))
-      .catch((e) => { setMode("login"); setError(`API unreachable: ${e.message}`); });
+    api<Providers>("/auth/providers")
+      .then((p) => {
+        setProv(p);
+        if (mfa) { setChallenge(mfa); setHint(q.get("hint")); setStep("mfa"); }
+        else if (p.needs_owner && !p.google && !p.email_codes_available) setStep("setup-password");
+        else if (!p.google && !p.email_codes_available) setStep("password");
+        else setStep("start");
+      })
+      .catch((e) => { setStep("start"); setError(`Can't reach the server: ${e.message}`); });
   }, []);
 
-  function done(token: string) {
-    setToken(token);
-    window.location.href = "/";
-  }
+  const done = (token: string) => { setToken(token); window.location.href = "/"; };
+  const run = async (fn: () => Promise<void>) => {
+    setError(null); setInfo(null); setBusy(true);
+    try { await fn(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  };
+
+  const sendCode = () => run(async () => {
+    const r = await api<LoginOut>("/auth/email/start", { method: "POST", json: { email } });
+    setChallenge(r.challenge_id); setHint(r.email_hint); setCode(""); setStep("code");
+  });
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
-    setInfo(null);
-    if (mode === "setup" && password !== confirm) return setError("Passwords do not match");
-    setBusy(true);
-    try {
-      if (mode === "setup") {
-        const r = await api<{ access_token: string }>("/auth/setup", { method: "POST", json: { email, full_name: name, password, create_brands: brands } });
-        return done(r.access_token);
-      }
-      if (mode === "code") {
-        const r = await api<{ access_token: string }>("/auth/otp/verify", { method: "POST", json: { challenge_id: challenge, code } });
-        return done(r.access_token);
-      }
+    if (step === "start") return sendCode();
+    if (step === "code") return run(async () => {
+      const r = await api<{ access_token: string }>("/auth/email/verify", { method: "POST", json: { challenge_id: challenge, code, full_name: name || null } });
+      done(r.access_token);
+    });
+    if (step === "mfa") return run(async () => {
+      const r = await api<{ access_token: string }>("/auth/otp/verify", { method: "POST", json: { challenge_id: challenge, code } });
+      done(r.access_token);
+    });
+    if (step === "password") return run(async () => {
       const r = await api<LoginOut>("/auth/login", { method: "POST", json: { email, password } });
-      if (r.mfa_required) {
-        setChallenge(r.challenge_id);
-        setHint(r.email_hint);
-        setCode("");
-        setMode("code");
-      } else if (r.access_token) done(r.access_token);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
+      if (r.mfa_required) { setChallenge(r.challenge_id); setHint(r.email_hint); setCode(""); setStep("mfa"); }
+      else if (r.access_token) done(r.access_token);
+    });
+    if (step === "setup-password") return run(async () => {
+      if (password !== confirm) throw new Error("Passwords do not match");
+      const r = await api<{ access_token: string }>("/auth/setup", { method: "POST", json: { email, full_name: name, password, create_brands: false } });
+      done(r.access_token);
+    });
   }
 
-  async function resend() {
-    setError(null);
-    try {
-      const r = await api<LoginOut>("/auth/otp/resend", { method: "POST", json: { challenge_id: challenge } });
-      setChallenge(r.challenge_id);
-      setInfo("A new code is on its way.");
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
+  const resend = () => run(async () => {
+    if (step === "code") return sendCode();
+    const r = await api<LoginOut>("/auth/otp/resend", { method: "POST", json: { challenge_id: challenge } });
+    setChallenge(r.challenge_id); setInfo("A new code is on its way.");
+  });
 
-  const title = mode === "setup" ? "Set up Comms Hub" : mode === "code" ? "Check your email" : "Comms Hub";
-  const desc = mode === "setup"
-    ? "First run: create the Super Admin account. This screen disappears once an account exists."
-    : mode === "code"
-      ? `We sent a 6-digit code to ${hint ?? "your email"}. It expires in 10 minutes.`
-      : "Sign in to manage Email, WhatsApp and SMS across your brands.";
+  const owner = prov.needs_owner;
+  const title = step === "code" || step === "mfa" ? "Check your email" : owner ? "Create the owner account" : "Sign in to Comms Hub";
+  const desc = step === "code" || step === "mfa"
+    ? `We sent a 6-digit code to ${hint ?? "your email"}. It expires in 10 minutes.`
+    : owner
+      ? "You're the first person here, so this account will own the brand group (Super Admin)."
+      : "Manage Email, WhatsApp and SMS across your brands.";
+  const codeInput = (
+    <Field label="6-digit code">
+      <Input inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" maxLength={6} autoFocus
+        className="text-center text-lg tracking-[0.5em]" value={code}
+        onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} required />
+    </Field>
+  );
 
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
@@ -119,58 +121,77 @@ export default function LoginPage() {
           <CardDescription>{desc}</CardDescription>
         </CardHeader>
         <CardContent>
-          {mode === "loading" ? <p className="text-sm text-muted-foreground">Loading…</p> : (
-            <>
-              {mode === "login" && google && (
+          {step === "loading" ? <p className="text-sm text-muted-foreground">Loading…</p> : (
+            <form onSubmit={submit} className="flex flex-col gap-3">
+              {step === "start" && (
                 <>
-                  <a href="/api/auth/google/start"
-                    className="flex h-9 w-full items-center justify-center gap-2 rounded-md border border-input bg-background text-sm font-medium hover:bg-accent">
-                    <GoogleIcon /> Sign in with Google
-                  </a>
-                  <div className="my-4 flex items-center gap-3 text-xs text-muted-foreground">
-                    <div className="h-px flex-1 bg-border" /> or <div className="h-px flex-1 bg-border" />
-                  </div>
+                  {prov.google && (
+                    <a href="/api/auth/google/start"
+                      className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-input bg-background text-sm font-medium hover:bg-accent">
+                      <GoogleIcon /> {owner ? "Sign up with Google" : "Continue with Google"}
+                    </a>
+                  )}
+                  {prov.google && prov.email_codes_available && (
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground"><div className="h-px flex-1 bg-border" /> or <div className="h-px flex-1 bg-border" /></div>
+                  )}
+                  {prov.email_codes_available ? (
+                    <>
+                      <Field label="Email"><Input type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></Field>
+                      <Button disabled={busy}>{busy ? "Sending…" : "Email me a code"}</Button>
+                    </>
+                  ) : (
+                    !prov.google && <p className="text-sm text-muted-foreground">Email codes and Google aren&apos;t set up on the server yet.</p>
+                  )}
+                  {!owner && (
+                    <button type="button" className="text-center text-xs text-muted-foreground hover:underline" onClick={() => { setStep("password"); setError(null); }}>
+                      Sign in with a password instead
+                    </button>
+                  )}
                 </>
               )}
-              <form onSubmit={submit} className="flex flex-col gap-3">
-                {mode === "code" ? (
-                  <Field label="6-digit code">
-                    <Input inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" maxLength={6} autoFocus
-                      className="text-center text-lg tracking-[0.5em]" value={code}
-                      onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} required />
+
+              {step === "code" && (
+                <>
+                  {owner && <Field label="Your name"><Input value={name} onChange={(e) => setName(e.target.value)} required /></Field>}
+                  {codeInput}
+                </>
+              )}
+              {step === "mfa" && codeInput}
+
+              {(step === "password" || step === "setup-password") && (
+                <>
+                  {step === "setup-password" && <Field label="Full name"><Input value={name} onChange={(e) => setName(e.target.value)} required /></Field>}
+                  <Field label="Email"><Input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required /></Field>
+                  <Field label="Password">
+                    <Input type="password" autoComplete={step === "password" ? "current-password" : "new-password"} minLength={step === "password" ? undefined : 10}
+                      value={password} onChange={(e) => setPassword(e.target.value)} required />
                   </Field>
-                ) : (
-                  <>
-                    {mode === "setup" && <Field label="Full name"><Input value={name} onChange={(e) => setName(e.target.value)} required /></Field>}
-                    <Field label="Email"><Input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required /></Field>
-                    <Field label="Password">
-                      <Input type="password" autoComplete={mode === "setup" ? "new-password" : "current-password"} minLength={mode === "setup" ? 10 : undefined}
-                        value={password} onChange={(e) => setPassword(e.target.value)} required />
-                    </Field>
-                  </>
-                )}
-                {mode === "setup" && (
-                  <>
+                  {step === "setup-password" && (
                     <Field label="Confirm password"><Input type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required /></Field>
-                    <label className="flex items-start gap-2 text-sm">
-                      <input type="checkbox" className="mt-1" checked={brands} onChange={(e) => setBrands(e.target.checked)} />
-                      <span>Create the 5 brand workspaces with demo (mock) senders. Mock senders never deliver real messages.</span>
-                    </label>
-                  </>
-                )}
-                {info && <p className="text-sm text-emerald-600">{info}</p>}
-                {error && <p className="text-sm text-destructive">{error}</p>}
-                <Button disabled={busy || (mode === "code" && code.length !== 6)}>
-                  {busy ? "Please wait…" : mode === "setup" ? "Create admin & continue" : mode === "code" ? "Verify & sign in" : "Sign in"}
+                  )}
+                </>
+              )}
+
+              {info && <p className="text-sm text-emerald-600">{info}</p>}
+              {error && <p className="text-sm text-destructive">{error}</p>}
+
+              {step !== "start" && (
+                <Button disabled={busy || ((step === "code" || step === "mfa") && code.length !== 6)}>
+                  {busy ? "Please wait…" : step === "password" ? "Sign in" : step === "setup-password" ? "Create owner account" : owner ? "Verify & create account" : "Verify & sign in"}
                 </Button>
-                {mode === "code" && (
-                  <div className="flex justify-between text-xs">
-                    <button type="button" className="text-primary hover:underline" onClick={resend}>Send a new code</button>
-                    <button type="button" className="text-muted-foreground hover:underline" onClick={() => { setMode("login"); setError(null); }}>Back to sign in</button>
-                  </div>
-                )}
-              </form>
-            </>
+              )}
+              {(step === "code" || step === "mfa") && (
+                <div className="flex justify-between text-xs">
+                  <button type="button" className="text-primary hover:underline" onClick={resend}>Send a new code</button>
+                  <button type="button" className="text-muted-foreground hover:underline" onClick={() => { setStep("start"); setError(null); }}>Back</button>
+                </div>
+              )}
+              {step === "password" && (
+                <button type="button" className="text-center text-xs text-muted-foreground hover:underline" onClick={() => { setStep("start"); setError(null); }}>
+                  Back to other sign-in options
+                </button>
+              )}
+            </form>
           )}
         </CardContent>
       </Card>

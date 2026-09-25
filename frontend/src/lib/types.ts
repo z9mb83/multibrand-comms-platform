@@ -1,4 +1,4 @@
-export type Brand = { id: number; slug: string; name: string; role?: string; primary_color?: string | null; status?: string; timezone?: string };
+export type Brand = { id: number; slug: string; name: string; master_email?: string | null; role?: string; primary_color?: string | null; status?: string; timezone?: string };
 export type Me = { id: number; email: string; full_name: string; is_super_admin: boolean; brands: Brand[] };
 export type Sender = {
   id: number; brand_id: number; channel: string; address: string; display_name: string | null; provider: string;

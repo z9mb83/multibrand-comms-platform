@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import auth, brands, campaigns, contacts, imports, inbox, internal, reports, senders, webhooks, workflow
+from app.api.routes import auth, brands, campaigns, contacts, imports, inbox, internal, mailboxes, reports, senders, webhooks, workflow
 from app.core.config import get_settings
 from app.services.common import DomainError
 
@@ -25,7 +25,7 @@ def create_app() -> FastAPI:
     def health():
         return {"status": "ok", "env": s.app_env, "provider_mode": s.provider_mode}
 
-    for r in (auth.router, auth.users, brands.router, senders.router, contacts.router, imports.router,
+    for r in (auth.router, auth.users, brands.router, mailboxes.router, senders.router, contacts.router, imports.router,
               campaigns.router, campaigns.global_router, inbox.router, workflow.router, workflow.tasks_global,
               reports.router, reports.analytics, webhooks.router, internal.router):
         app.include_router(r, prefix="/api" if r not in (webhooks.router, internal.router) else "")

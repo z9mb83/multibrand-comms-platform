@@ -16,6 +16,7 @@ class Brand(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(20), default="active")
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Kolkata")
     primary_color: Mapped[str | None] = mapped_column(String(16))
+    master_email: Mapped[str | None] = mapped_column(String(255))  # brand's main mailbox (also a sender)
     settings: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     memberships: Mapped[list["BrandMembership"]] = relationship(back_populates="brand")
@@ -46,8 +47,10 @@ class AuthChallenge(Base):
     __tablename__ = "auth_challenges"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    purpose: Mapped[str] = mapped_column(String(20))  # login | enable_mfa
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True, default="", server_default="")  # where the code was sent
+    sender_account_id: Mapped[int | None] = mapped_column(ForeignKey("sender_accounts.id", ondelete="CASCADE"))
+    purpose: Mapped[str] = mapped_column(String(20))  # login|email_login|signup_owner|enable_mfa|disable_mfa|verify_mailbox
     code_hash: Mapped[str] = mapped_column(String(64))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(default=0)

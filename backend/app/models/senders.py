@@ -25,6 +25,9 @@ class SenderAccount(TimestampMixin, Base):
     paused_reason: Mapped[str | None] = mapped_column(String(255))
     rotation_order: Mapped[int] = mapped_column(Integer, default=0)
     is_notification_sender: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_master: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # brand's main mailbox
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # ownership proven (code or Google)
+    verified_via: Mapped[str | None] = mapped_column(String(20))  # email_code | google
 
     # Limits: configured (ours) and provider-authorised (theirs). Effective = min of both.
     daily_limit: Mapped[int] = mapped_column(Integer, default=100)
@@ -76,3 +79,18 @@ class SenderAssignment(Base):
     outcome: Mapped[str] = mapped_column(String(20))  # assigned|held|no_eligible
     reason: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class SenderCredential(Base):
+    """Encrypted provider credential (e.g. Gmail OAuth refresh token) for hosts without a secret manager.
+    Referenced from SenderAccount.secret_ref as 'db:<sender_account_id>'."""
+
+    __tablename__ = "sender_credentials"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sender_account_id: Mapped[int] = mapped_column(ForeignKey("sender_accounts.id", ondelete="CASCADE"), unique=True)
+    kind: Mapped[str] = mapped_column(String(30))  # google_oauth
+    ciphertext: Mapped[str] = mapped_column(Text)
+    scopes: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     # Public URL of the dashboard (used for the Google OAuth redirect: <PUBLIC_APP_URL>/api/auth/google/callback)
     public_app_url: str = "http://localhost:3000"
 
+    # Key for encrypting stored mailbox credentials (defaults to a key derived from the server secret)
+    encryption_key: str = ""
+
     # Sign in with Google (disabled unless both are set)
     google_client_id: str = ""
     google_client_secret: str = ""
@@ -71,7 +74,7 @@ class Settings(BaseSettings):
 
         if unset(self.app_env):
             self.app_env = "local"
-        if unset(self.provider_mode) or self.provider_mode not in ("mock", "live"):
+        if unset(self.provider_mode) or self.provider_mode not in ("mock", "live", "auto"):
             self.provider_mode = "mock"
         if unset(self.task_backend) or self.task_backend not in ("inline", "cloud_tasks"):
             self.task_backend = "inline"

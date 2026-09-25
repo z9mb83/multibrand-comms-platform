@@ -45,19 +45,28 @@ def seed_brands(db: Session, admin: User) -> None:
                                  provider_config={"header": hdr, "dlt_entity_id": "MOCK-ENTITY"}))
 
 
-def create_first_admin(db: Session, *, email: str, full_name: str, password: str, with_brands: bool) -> User:
+def create_owner(db: Session, *, email: str, full_name: str, password: str | None = None,
+                 google_sub: str | None = None, via: str = "password", with_brands: bool = False) -> User:
+    """Create the first account (the Super Admin who owns the brand group). Only possible while no users exist."""
+    import secrets
     # Serialise concurrent first-run requests; only the very first one can succeed.
     db.execute(text("SELECT pg_advisory_xact_lock(4242001)"))
     if not needs_setup(db):
-        raise DomainError("setup has already been completed", 409)
-    if len(password) < 10:
+        raise DomainError("The owner account has already been created. Please sign in.", 409)
+    if password is not None and len(password) < 10:
         raise DomainError("password must be at least 10 characters")
-    admin = User(email=email.lower(), full_name=full_name, password_hash=hash_password(password), is_super_admin=True)
+    # Passwordless owners get an unusable random password hash (they sign in with email codes or Google)
+    admin = User(email=email.lower(), full_name=full_name, is_super_admin=True, google_sub=google_sub,
+                 password_hash=hash_password(password or secrets.token_urlsafe(32)))
     db.add(admin)
     db.flush()
     s = get_settings_row(db)
     s.master_email = s.master_email or admin.email
     if with_brands:
         seed_brands(db, admin)
-    audit(db, "setup.completed", user_id=admin.id, with_brands=with_brands)
+    audit(db, "setup.completed", user_id=admin.id, with_brands=with_brands, via=via)
     return admin
+
+
+def create_first_admin(db: Session, *, email: str, full_name: str, password: str, with_brands: bool) -> User:
+    return create_owner(db, email=email, full_name=full_name, password=password, with_brands=with_brands)

@@ -10,7 +10,20 @@ from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models import Brand, User
-from app.schemas.api import ChallengeIn, LoginIn, LoginOut, MeOut, MfaStartIn, OtpVerifyIn, SetupIn, TokenOut, UserCreate, UserOut
+from app.schemas.api import (
+    ChallengeIn,
+    EmailStartIn,
+    EmailVerifyIn,
+    LoginIn,
+    LoginOut,
+    MeOut,
+    MfaStartIn,
+    OtpVerifyIn,
+    SetupIn,
+    TokenOut,
+    UserCreate,
+    UserOut,
+)
 from app.services import auth_flows, bootstrap
 from app.services.common import DomainError, audit, now_utc
 
@@ -36,8 +49,42 @@ def _finish(db: Session, user: User, method: str) -> LoginOut:
 
 
 @router.get("/providers")
-def providers():
-    return {"google": auth_flows.google_enabled(), "email_codes_available": auth_flows.mfa_available()}
+def providers(db: Session = Depends(get_db)):
+    return {"google": auth_flows.google_enabled(), "email_codes_available": auth_flows.mfa_available(),
+            "needs_owner": bootstrap.needs_setup(db)}
+
+
+@router.post("/email/start", response_model=LoginOut)
+def email_start(body: EmailStartIn, db: Session = Depends(get_db)):
+    """Passwordless: email a sign-in code. On a new installation this creates the owner account instead.
+    Unknown addresses get the same response (no code is sent) so accounts can't be discovered."""
+    import uuid
+    email = body.email.lower()
+    if bootstrap.needs_setup(db):
+        ch = auth_flows.issue_code(db, None, "signup_owner", "email", email=email)
+    else:
+        user = db.scalars(select(User).where(User.email == email)).first()
+        if user is None or not user.is_active:
+            return LoginOut(mfa_required=True, challenge_id=str(uuid.uuid4()), email_hint=_mask(email))
+        ch = auth_flows.issue_code(db, user, "email_login", "email")
+    db.commit()
+    return LoginOut(mfa_required=True, challenge_id=ch.id, email_hint=_mask(email))
+
+
+@router.post("/email/verify", response_model=TokenOut)
+def email_verify(body: EmailVerifyIn, db: Session = Depends(get_db)):
+    ch = auth_flows.check_code(db, body.challenge_id, body.code, ("email_login", "signup_owner"))
+    if ch.purpose == "signup_owner":
+        user = bootstrap.create_owner(db, email=ch.email, full_name=(body.full_name or ch.email.split("@")[0]).strip(),
+                                      via="email_code")
+    else:
+        user = db.get(User, ch.user_id)
+        if user is None or not user.is_active:
+            raise HTTPException(401, "Account disabled")
+    user.last_login_at = now_utc()
+    audit(db, "auth.login", user_id=user.id, method="email_code")
+    db.commit()
+    return TokenOut(access_token=create_access_token(user.id))
 
 
 @router.post("/login", response_model=LoginOut)
@@ -84,6 +131,21 @@ def google_callback(code: str | None = None, state: str | None = None, error: st
 
     if error or not code or not state:
         return back("?error=" + quote("Google sign-in was cancelled."))
+    kind = "login"
+    try:
+        kind = auth_flows._unsign(state).get("k", "login")
+    except DomainError:
+        pass
+    if kind == "mailbox":
+        try:
+            acc = auth_flows.connect_mailbox(db, code=code, state=state, binding=g_bind)
+            db.commit()
+            r = RedirectResponse(f"/brands?brand={acc.brand_id}&connected={quote(acc.address)}", status_code=302)
+        except DomainError as exc:
+            db.rollback()
+            r = RedirectResponse("/brands?error=" + quote(str(exc)), status_code=302)
+        r.delete_cookie(BIND_COOKIE, path="/api/auth/google")
+        return r
     try:
         user = auth_flows.google_callback(db, code=code, state=state, binding=g_bind)
         out = _finish(db, user, "google")

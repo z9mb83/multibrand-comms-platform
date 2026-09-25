@@ -39,6 +39,16 @@ class OtpVerifyIn(BaseModel):
     code: str = Field(min_length=6, max_length=6)
 
 
+class EmailStartIn(BaseModel):
+    email: EmailStr
+
+
+class EmailVerifyIn(BaseModel):
+    challenge_id: str
+    code: str = Field(min_length=6, max_length=6)
+    full_name: str | None = None  # used only when creating the owner account
+
+
 class ChallengeIn(BaseModel):
     challenge_id: str
 
@@ -77,6 +87,7 @@ class MembershipIn(BaseModel):
 class BrandIn(BaseModel):
     slug: str = Field(pattern=r"^[a-z0-9-]{2,64}$")
     name: str
+    master_email: EmailStr | None = None
     timezone: str = "Asia/Kolkata"
     primary_color: str | None = None
 
@@ -93,6 +104,7 @@ class BrandOut(ORM):
     id: int
     slug: str
     name: str
+    master_email: str | None = None
     status: str
     timezone: str
     primary_color: str | None

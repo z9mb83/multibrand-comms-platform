@@ -4,6 +4,8 @@ from app.providers.mock import MockProvider
 
 
 def get_provider(channel: str, provider_name: str) -> Provider:
+    """PROVIDER_MODE: "mock" = everything is simulated; "live"/"auto" = accounts use their real provider
+    (accounts whose provider is "mock", such as demo senders, always stay simulated)."""
     if get_settings().provider_mode == "mock" or provider_name == "mock":
         return MockProvider(channel)
     if channel == "email" and provider_name == "gmail":

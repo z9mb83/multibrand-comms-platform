@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 
 export const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
-  { href: "/brands", label: "Brands", icon: Building2 },
+  { href: "/brands", label: "Brands & Mailboxes", icon: Building2 },
   { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/import", label: "Excel Import", icon: FileSpreadsheet },
   { href: "/compose", label: "Compose", icon: PenSquare },

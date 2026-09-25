@@ -22,9 +22,15 @@ def list_brands(user: User = Depends(current_user), db: Session = Depends(get_db
 def create_brand(body: BrandIn, admin: User = Depends(require_super_admin), db: Session = Depends(get_db)):
     if db.scalar(select(Brand.id).where(Brand.slug == body.slug)):
         raise HTTPException(409, "slug already exists")
-    b = Brand(**body.model_dump(), settings={})
+    data = body.model_dump()
+    master = data.pop("master_email", None)
+    b = Brand(**data, settings={})
     db.add(b)
     db.flush()
+    db.add(BrandMembership(user_id=admin.id, brand_id=b.id, role="brand_admin"))
+    if master:
+        from app.api.routes.mailboxes import add_mailbox
+        add_mailbox(db, b, master, "master", admin.id)
     audit(db, "brand.created", user_id=admin.id, brand_id=b.id, entity_type="brand", entity_id=b.id)
     db.commit()
     return b
