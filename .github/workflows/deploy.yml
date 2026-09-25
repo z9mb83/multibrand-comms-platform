@@ -34,7 +34,7 @@ jobs:
           API_IMG=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/api:${{ github.sha }}
           WEB_IMG=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/web:${{ github.sha }}
           docker build -t $API_IMG backend
-          docker build -t $WEB_IMG --build-arg NEXT_PUBLIC_API_URL=${{ vars.API_PUBLIC_URL }} frontend
+          docker build -t $WEB_IMG --build-arg API_URL=${{ vars.API_PUBLIC_URL }} frontend
           docker push $API_IMG
           docker push $WEB_IMG
           echo "API_IMG=$API_IMG" >> $GITHUB_ENV
