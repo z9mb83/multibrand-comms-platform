@@ -2,7 +2,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import accessible_brand_ids, brand_role, current_user, require_super_admin
@@ -227,15 +227,65 @@ def list_users(_: User = Depends(current_user), db: Session = Depends(get_db)):
 
 @users.post("", response_model=UserOut, status_code=201)
 def create_user(body: UserCreate, admin: User = Depends(require_super_admin), db: Session = Depends(get_db)):
-    if db.scalar(select(User.id).where(User.email == body.email.lower())):
+    import secrets as _secrets
+
+    from app.models import BrandMembership
+    from app.models.enums import Role
+    email = body.email.lower()
+    existing = db.scalars(select(User).where(User.email == email)).first()
+    if existing is not None and existing.is_active:
         raise HTTPException(409, "email already exists")
-    u = User(email=body.email.lower(), full_name=body.full_name, password_hash=hash_password(body.password),
-             is_super_admin=body.is_super_admin, phone=body.phone)
-    db.add(u)
+    if body.brand_id is not None:
+        if db.get(Brand, body.brand_id) is None:
+            raise HTTPException(404, "brand not found")
+        if body.role not in {r.value for r in Role}:
+            raise HTTPException(400, "invalid role")
+    if existing is not None:  # re-inviting someone who was removed
+        u = existing
+        u.is_active, u.full_name, u.is_super_admin = True, body.full_name, body.is_super_admin
+    else:
+        u = User(email=email, full_name=body.full_name, is_super_admin=body.is_super_admin, phone=body.phone,
+                 password_hash=hash_password(body.password or _secrets.token_urlsafe(32)))
+        db.add(u)
     db.flush()
-    audit(db, "user.created", user_id=admin.id, entity_type="user", entity_id=u.id)
+    if body.brand_id is not None:
+        m = db.scalars(select(BrandMembership).where(BrandMembership.brand_id == body.brand_id,
+                                                     BrandMembership.user_id == u.id)).first()
+        if m is None:
+            db.add(BrandMembership(user_id=u.id, brand_id=body.brand_id, role=body.role))
+        else:
+            m.role = body.role
+    audit(db, "user.invited", user_id=admin.id, entity_type="user", entity_id=u.id, super_admin=body.is_super_admin)
     db.commit()
     return u
+
+
+@users.get("/team")
+def team(admin: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    from app.models import BrandMembership
+    rows = db.scalars(select(User).where(User.is_active.is_(True)).order_by(User.full_name)).all()
+    names = {b.id: b.name for b in db.scalars(select(Brand)).all()}
+    mems: dict[int, list] = {}
+    for m in db.scalars(select(BrandMembership)).all():
+        mems.setdefault(m.user_id, []).append({"brand_id": m.brand_id, "brand": names.get(m.brand_id), "role": m.role})
+    return [{"id": u.id, "email": u.email, "full_name": u.full_name, "is_super_admin": u.is_super_admin,
+             "google_linked": bool(u.google_sub), "is_you": u.id == admin.id, "brands": mems.get(u.id, [])}
+            for u in rows]
+
+
+@users.delete("/{user_id}", status_code=204)
+def remove_user(user_id: int, admin: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    u = db.get(User, user_id)
+    if u is None or not u.is_active:
+        raise HTTPException(404, "user not found")
+    if u.id == admin.id:
+        raise HTTPException(400, "You can't remove yourself")
+    if u.is_super_admin and db.scalar(select(func.count()).select_from(User).where(
+            User.is_super_admin.is_(True), User.is_active.is_(True))) <= 1:
+        raise HTTPException(400, "Keep at least one Super Admin")
+    u.is_active = False
+    audit(db, "user.removed", user_id=admin.id, entity_type="user", entity_id=u.id)
+    db.commit()
 
 
 @users.post("/{user_id}/mfa/reset", response_model=UserOut)

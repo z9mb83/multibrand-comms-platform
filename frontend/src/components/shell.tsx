@@ -3,6 +3,7 @@
 import {
   BarChart3, Building2, CheckSquare, ClipboardList, FileSpreadsheet, Inbox, LayoutDashboard, LogOut, Mail, Menu,
   MessageCircle, Megaphone, PenSquare, Repeat, Settings, Smartphone, Users, X,
+  UserCog,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -16,6 +17,7 @@ import { cn } from "@/lib/utils";
 export const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/brands", label: "Brands & Mailboxes", icon: Building2 },
+  { href: "/team", label: "Team", icon: UserCog },
   { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/import", label: "Excel Import", icon: FileSpreadsheet },
   { href: "/compose", label: "Compose", icon: PenSquare },

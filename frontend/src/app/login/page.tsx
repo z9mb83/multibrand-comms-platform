@@ -35,6 +35,7 @@ export default function LoginPage() {
   const [info, setInfo] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
 
   useEffect(() => {
     const hash = new URLSearchParams(window.location.hash.slice(1));
@@ -50,6 +51,7 @@ export default function LoginPage() {
     api<Providers>("/auth/providers")
       .then((p) => {
         setProv(p);
+        if (p.needs_owner || q.get("signup") !== null) setMode("signup");
         if (mfa) { setChallenge(mfa); setHint(q.get("hint")); setStep("mfa"); }
         else if (p.needs_owner && !p.google && !p.email_codes_available) setStep("setup-password");
         else if (!p.google && !p.email_codes_available) setStep("password");
@@ -99,12 +101,21 @@ export default function LoginPage() {
   });
 
   const owner = prov.needs_owner;
-  const title = step === "code" || step === "mfa" ? "Check your email" : owner ? "Create the owner account" : "Sign in to Comms Hub";
+  const signup = mode === "signup";
+  const title = step === "code" || step === "mfa" ? "Check your email"
+    : owner ? "Create the Super Admin account" : signup ? "Create your account" : "Sign in to Comms Hub";
   const desc = step === "code" || step === "mfa"
     ? `We sent a 6-digit code to ${hint ?? "your email"}. It expires in 10 minutes.`
     : owner
       ? "You're the first person here, so this account will own the brand group (Super Admin)."
-      : "Manage Email, WhatsApp and SMS across your brands.";
+      : signup
+        ? "Your Super Admin adds your email under Team first. Then sign up here with that same address."
+        : "Manage Email, WhatsApp and SMS across your brands.";
+  const switchMode = (m: "signin" | "signup") => {
+    setMode(m); setError(null); setInfo(null);
+    if (step === "password" || step === "setup-password") setStep(m === "signup" && owner && !prov.google && !prov.email_codes_available ? "setup-password" : "start");
+  };
+  const showTabs = step === "start" || step === "password" || step === "setup-password";
   const codeInput = (
     <Field label="6-digit code">
       <Input inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" maxLength={6} autoFocus
@@ -117,6 +128,16 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center p-4">
       <Card className="w-full max-w-sm">
         <CardHeader>
+          {showTabs && (
+            <div className="mb-2 grid grid-cols-2 rounded-md bg-muted p-1 text-sm">
+              {(["signin", "signup"] as const).map((m) => (
+                <button key={m} type="button" onClick={() => switchMode(m)}
+                  className={`rounded px-3 py-1.5 font-medium ${mode === m ? "bg-background shadow-sm" : "text-muted-foreground"}`}>
+                  {m === "signin" ? "Sign in" : "Sign up"}
+                </button>
+              ))}
+            </div>
+          )}
           <CardTitle className="text-lg">{title}</CardTitle>
           <CardDescription>{desc}</CardDescription>
         </CardHeader>
@@ -128,7 +149,7 @@ export default function LoginPage() {
                   {prov.google && (
                     <a href="/api/auth/google/start"
                       className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-input bg-background text-sm font-medium hover:bg-accent">
-                      <GoogleIcon /> {owner ? "Sign up with Google" : "Continue with Google"}
+                      <GoogleIcon /> {signup ? "Sign up with Google" : "Sign in with Google"}
                     </a>
                   )}
                   {prov.google && prov.email_codes_available && (
@@ -137,12 +158,12 @@ export default function LoginPage() {
                   {prov.email_codes_available ? (
                     <>
                       <Field label="Email"><Input type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></Field>
-                      <Button disabled={busy}>{busy ? "Sending…" : "Email me a code"}</Button>
+                      <Button disabled={busy}>{busy ? "Sending…" : signup ? "Sign up with an email code" : "Email me a code"}</Button>
                     </>
                   ) : (
                     !prov.google && <p className="text-sm text-muted-foreground">Email codes and Google aren&apos;t set up on the server yet.</p>
                   )}
-                  {!owner && (
+                  {!owner && !signup && (
                     <button type="button" className="text-center text-xs text-muted-foreground hover:underline" onClick={() => { setStep("password"); setError(null); }}>
                       Sign in with a password instead
                     </button>

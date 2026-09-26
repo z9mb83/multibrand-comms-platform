@@ -200,3 +200,43 @@ def test_mailbox_google_start_endpoint_sets_cookie(client, db, world, google_on)
     assert r.status_code == 200 and r.json()["url"].startswith("https://accounts.google.com/")
     assert "login_hint=info%40pe2.com" in r.json()["url"]
     assert "g_bind=" in r.headers["set-cookie"] and "HttpOnly" in r.headers["set-cookie"]
+
+
+# ------------------------------------------------------------------ team invites (sign-up after the owner exists)
+def test_owner_invites_super_admin_who_then_signs_up_with_google(client, db, world, google_on):
+    h = auth(world["admin"])
+    r = client.post("/api/users", headers=h, json={"email": "Admin@99MarketingServices.com", "full_name": "Group Admin",
+                                                   "is_super_admin": True})
+    assert r.status_code == 201
+    url, binding = auth_flows.google_start("login")
+    state = unquote(re.search(r"state=([^&]+)", url).group(1))
+    user = auth_flows.google_callback(db, code="c", state=state, binding=binding,
+                                      verify=_ok_verify("admin@99marketingservices.com"), exchange=lambda c: TOKENS)
+    assert user.email == "admin@99marketingservices.com" and user.is_super_admin and user.google_sub == "g-9"
+
+
+def test_invite_with_brand_role_and_team_listing(client, db, world):
+    h = auth(world["admin"])
+    r = client.post("/api/users", headers=h, json={"email": "agent@pe.com", "full_name": "Agent",
+                                                   "brand_id": world["a"].id, "role": "agent"})
+    assert r.status_code == 201
+    team = {u["email"]: u for u in client.get("/api/users/team", headers=h).json()}
+    assert team["agent@pe.com"]["brands"] == [{"brand_id": world["a"].id, "brand": world["a"].name, "role": "agent"}]
+    bad = client.post("/api/users", headers=h, json={"email": "x@pe.com", "full_name": "X", "brand_id": world["a"].id,
+                                                     "role": "emperor"})
+    assert bad.status_code == 400
+    assert client.post("/api/users", headers=h, json={"email": "agent@pe.com", "full_name": "A"}).status_code == 409
+
+
+def test_only_super_admins_invite_and_removed_users_cannot_sign_in(client, db, world):
+    assert client.post("/api/users", headers=auth(world["agent_a"]),
+                       json={"email": "z@z.io", "full_name": "Z"}).status_code == 403
+    h = auth(world["admin"])
+    uid = client.post("/api/users", headers=h, json={"email": "gone@z.io", "full_name": "G"}).json()["id"]
+    assert client.delete(f"/api/users/{uid}", headers=h).status_code == 204
+    assert client.delete(f"/api/users/{world['admin'].id}", headers=h).status_code == 400
+    start = client.post("/api/auth/email/start", json={"email": "gone@z.io"}).json()
+    assert DEV_OUTBOX == []
+    assert client.post("/api/auth/email/verify", json={"challenge_id": start["challenge_id"], "code": "000000"}).status_code == 401
+    # re-inviting brings them back
+    assert client.post("/api/users", headers=h, json={"email": "gone@z.io", "full_name": "G"}).status_code == 201

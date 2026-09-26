@@ -71,11 +71,14 @@ class MeOut(UserOut):
 
 
 class UserCreate(BaseModel):
+    """Invite a person. Without a password they sign up with Google or an email code using this address."""
     email: EmailStr
     full_name: str
-    password: str = Field(min_length=8)
+    password: str | None = Field(default=None, min_length=8)
     is_super_admin: bool = False
     phone: str | None = None
+    brand_id: int | None = None
+    role: str | None = None
 
 
 class MembershipIn(BaseModel):
