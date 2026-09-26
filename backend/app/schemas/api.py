@@ -100,10 +100,32 @@ class MembershipIn(BaseModel):
 # ---- brands
 class BrandIn(BaseModel):
     slug: str = Field(pattern=r"^[a-z0-9-]{2,64}$")
-    name: str
+    name: str = Field(min_length=1, max_length=160)
     master_email: EmailStr | None = None
     timezone: str = "Asia/Kolkata"
     primary_color: str | None = None
+    # Brand profile (used in the email signature and as the AI's approved facts)
+    description: str | None = Field(default=None, max_length=4000)
+    phone: str | None = Field(default=None, max_length=40)
+    website: str | None = Field(default=None, max_length=255)
+    signature_name: str | None = Field(default=None, max_length=120)
+    signature_title: str | None = Field(default=None, max_length=120)
+
+
+class BrandProfileIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    primary_color: str | None = None
+    timezone: str | None = None
+    description: str | None = Field(default=None, max_length=4000)
+    phone: str | None = Field(default=None, max_length=40)
+    website: str | None = Field(default=None, max_length=255)
+    cc_email: str | None = None
+    signature_name: str | None = Field(default=None, max_length=120)
+    signature_title: str | None = Field(default=None, max_length=120)
+
+
+class BrandDeleteIn(BaseModel):
+    confirm_name: str
 
 
 class BrandUpdate(BaseModel):

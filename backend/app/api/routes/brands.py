@@ -1,12 +1,21 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import BrandCtx, accessible_brand_ids, brand_ctx, current_user, require_super_admin
 from app.core.db import get_db
 from app.models import Brand, BrandMembership, MessageTemplate, User
 from app.models.enums import Role
-from app.schemas.api import BrandIn, BrandOut, BrandUpdate, MembershipIn, TemplateIn, TemplateOut
+from app.schemas.api import (
+    BrandDeleteIn,
+    BrandIn,
+    BrandOut,
+    BrandProfileIn,
+    BrandUpdate,
+    MembershipIn,
+    TemplateIn,
+    TemplateOut,
+)
 from app.services.common import audit
 
 router = APIRouter(prefix="/brands", tags=["brands"])
@@ -24,6 +33,9 @@ def create_brand(body: BrandIn, admin: User = Depends(require_super_admin), db: 
         raise HTTPException(409, "slug already exists")
     data = body.model_dump()
     master = data.pop("master_email", None)
+    profile = {k: data.pop(k) for k in ("description", "phone", "website", "signature_name", "signature_title")}
+    if db.scalar(select(Brand.id).where(func.lower(Brand.name) == data["name"].strip().lower())):
+        raise HTTPException(409, "A brand with this name already exists")
     b = Brand(**data, settings={})
     db.add(b)
     db.flush()
@@ -31,6 +43,17 @@ def create_brand(body: BrandIn, admin: User = Depends(require_super_admin), db: 
     if master:
         from app.api.routes.mailboxes import add_mailbox
         add_mailbox(db, b, master, "master", admin.id)
+        b.master_email = master.lower()
+    from app.services.outreach.engine import settings_for
+    st = settings_for(db, b.id)
+    st.cc_email = (master or "").lower()
+    st.brand_facts = (profile["description"] or "").strip()
+    st.phone = (profile["phone"] or "").strip()
+    st.website = (profile["website"] or "").strip()
+    if profile["signature_name"] is not None:
+        st.signature_name = profile["signature_name"].strip()
+    if profile["signature_title"] is not None:
+        st.signature_title = profile["signature_title"].strip()
     audit(db, "brand.created", user_id=admin.id, brand_id=b.id, entity_type="brand", entity_id=b.id)
     db.commit()
     return b
@@ -50,6 +73,72 @@ def update_brand(body: BrandUpdate, ctx: BrandCtx = Depends(brand_ctx), db: Sess
     audit(db, "brand.updated", user_id=ctx.user.id, brand_id=b.id, entity_type="brand", entity_id=b.id)
     db.commit()
     return b
+
+
+def profile_out(db: Session, b: Brand) -> dict:
+    from app.services.outreach.engine import settings_for
+    st = settings_for(db, b.id)
+    return {"id": b.id, "name": b.name, "slug": b.slug, "primary_color": b.primary_color, "timezone": b.timezone,
+            "master_email": b.master_email, "description": st.brand_facts, "phone": st.phone, "website": st.website,
+            "cc_email": st.cc_email, "signature_name": st.signature_name, "signature_title": st.signature_title}
+
+
+@router.get("/{brand_id}/profile")
+def get_profile(ctx: BrandCtx = Depends(brand_ctx), db: Session = Depends(get_db)):
+    out = profile_out(db, db.get(Brand, ctx.brand_id))
+    db.commit()
+    return out
+
+
+@router.put("/{brand_id}/profile")
+def put_profile(body: BrandProfileIn, ctx: BrandCtx = Depends(brand_ctx), db: Session = Depends(get_db)):
+    from app.services.outreach.engine import is_valid_email, settings_for
+    ctx.require(Role.BRAND_ADMIN)
+    b = db.get(Brand, ctx.brand_id)
+    st = settings_for(db, b.id)
+    data = body.model_dump(exclude_unset=True)
+    if data.get("name"):
+        name = data["name"].strip()
+        if db.scalar(select(Brand.id).where(func.lower(Brand.name) == name.lower(), Brand.id != b.id)):
+            raise HTTPException(409, "A brand with this name already exists")
+        b.name = name
+    for k in ("primary_color", "timezone"):
+        if data.get(k):
+            setattr(b, k, data[k])
+    if "cc_email" in data:
+        cc = (data["cc_email"] or "").strip().lower()
+        if cc and not is_valid_email(cc):
+            raise HTTPException(400, "CC email is not a valid address")
+        st.cc_email = cc
+    mapping = {"description": "brand_facts", "phone": "phone", "website": "website", "signature_name": "signature_name",
+               "signature_title": "signature_title"}
+    for k, col in mapping.items():
+        if k in data:
+            setattr(st, col, (data[k] or "").strip())
+    audit(db, "brand.profile_updated", user_id=ctx.user.id, brand_id=b.id, fields=sorted(data))
+    db.commit()
+    return profile_out(db, b)
+
+
+@router.post("/{brand_id}/delete")
+def delete_brand(brand_id: int, body: BrandDeleteIn, admin: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    """Permanently delete a brand and everything in it (mailboxes, leads, contacts, campaigns, messages).
+    The exact brand name must be typed to confirm."""
+    from sqlalchemy import delete, update
+
+    from app.models import AuditLog
+    b = db.get(Brand, brand_id)
+    if b is None:
+        raise HTTPException(404, "brand not found")
+    if body.confirm_name.strip() != b.name:
+        raise HTTPException(400, "Type the brand name exactly to confirm")
+    name = b.name
+    db.execute(update(AuditLog).where(AuditLog.brand_id == b.id).values(brand_id=None))
+    db.execute(delete(Brand).where(Brand.id == brand_id))  # the database cascades to everything in the brand
+    db.expunge_all()
+    audit(db, "brand.deleted", user_id=admin.id, entity_type="brand", entity_id=brand_id, name=name)
+    db.commit()
+    return {"deleted": name}
 
 
 @router.get("/{brand_id}/members")

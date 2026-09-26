@@ -504,3 +504,50 @@ def test_delete_demo_sender_but_keep_ones_with_history(client, db, world):
     db.expire_all()
     assert db.query(SenderAccount).filter(SenderAccount.id == s1_id).count() == 0
     assert client.delete(f"/api/brands/{world['a'].id}/senders/{s2_id}", headers=auth(world["agent_a"])).status_code == 403
+
+
+def test_create_brand_with_profile_then_edit_and_delete(client, db, world):
+    from app.models import Brand, SenderAccount
+    from tests.conftest import add_contact
+    h = auth(world["admin"])
+    r = client.post("/api/brands", headers=h, json={
+        "slug": "property-experts-group", "name": "Property Experts Group", "master_email": "info@propertyexpertsgroup.com",
+        "description": "Helps buyers and investors with property discovery in Chandigarh and Mohali.",
+        "phone": "+91 8080803736", "website": "https://propertyexpertsgroup.com", "signature_name": "Manpreet Singh",
+        "signature_title": "Operations Head"})
+    assert r.status_code == 201
+    bid = r.json()["id"]
+    prof = client.get(f"/api/brands/{bid}/profile", headers=h).json()
+    assert prof["description"].startswith("Helps buyers") and prof["cc_email"] == "info@propertyexpertsgroup.com"
+    assert prof["signature_name"] == "Manpreet Singh"
+    box = db.scalars(select(SenderAccount).where(SenderAccount.brand_id == bid)).one()
+    assert box.is_master and box.provider == "gmail" and box.connection_status == "pending"
+    assert client.post("/api/brands", headers=h, json={"slug": "pe2", "name": "property experts group"}).status_code == 409
+    up = client.put(f"/api/brands/{bid}/profile", headers=h, json={"phone": "+91 1", "website": ""}).json()
+    assert up["phone"] == "+91 1" and up["website"] == ""
+    # delete needs the exact name and removes everything in the brand
+    brand = db.get(Brand, bid)
+    add_contact(db, brand, email="c@x.io")
+    lead(db, brand, "l@x.io")
+    db.commit()
+    assert client.post(f"/api/brands/{bid}/delete", headers=h, json={"confirm_name": "wrong"}).status_code == 400
+    assert client.post(f"/api/brands/{bid}/delete", headers=auth(world["agent_a"]), json={"confirm_name": "Property Experts Group"}).status_code == 403
+    assert client.post(f"/api/brands/{bid}/delete", headers=h, json={"confirm_name": "Property Experts Group"}).status_code == 200
+    db.expire_all()
+    assert db.query(Brand).filter(Brand.id == bid).count() == 0
+    assert db.query(OutreachLead).filter(OutreachLead.brand_id == bid).count() == 0
+
+
+def test_delete_brand_with_full_history(client, db, world):
+    """A seeded brand with senders, contacts, campaigns and messages can be deleted cleanly."""
+    from app.models import Brand
+    from tests.conftest import add_contact
+    h = auth(world["admin"])
+    a = world["a"]
+    add_contact(db, a, email="c@x.io")
+    db.commit()
+    camp = client.post(f"/api/brands/{a.id}/campaigns", headers=h, json={"name": "C", "channel": "email", "subject": "S", "body": "B"})
+    assert camp.status_code in (200, 201), camp.text
+    assert client.post(f"/api/brands/{a.id}/delete", headers=h, json={"confirm_name": a.name}).status_code == 200
+    db.expire_all()
+    assert db.query(Brand).count() == 1
