@@ -252,6 +252,41 @@ function BrandCard({ brand, google, isSuper }: { brand: Brand; google: boolean; 
   );
 }
 
+function SampleBrandsNotice() {
+  const [samples, setSamples] = useState<{ brands: { id: number; name: string }[]; confirm_text: string } | null>(null);
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api<{ brands: { id: number; name: string }[]; confirm_text: string }>("/brands/samples").then(setSamples).catch(() => {}); }, []);
+  if (!samples?.brands.length) return null;
+  const remove = async () => {
+    setBusy(true); setErr(null);
+    try { await api("/brands/samples/remove", { method: "POST", json: { confirm: typed } }); window.location.href = "/brands"; }
+    catch (e) { setErr((e as Error).message); setBusy(false); }
+  };
+  return (
+    <div className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="flex-1">
+          <b>{samples.brands.map((b) => b.name).join(", ")}</b> {samples.brands.length === 1 ? "is an example brand" : "are example brands"} created
+          automatically when this workspace was first set up. You didn&apos;t add {samples.brands.length === 1 ? "it" : "them"}.
+        </span>
+        {!open && <Button size="sm" variant="outline" onClick={() => setOpen(true)}>Remove sample brands</Button>}
+      </div>
+      {open && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs">This permanently deletes {samples.brands.length === 1 ? "this brand" : `these ${samples.brands.length} brands`} and everything in them. Type <b>{samples.confirm_text}</b> to confirm:</span>
+          <Input className="max-w-xs" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={samples.confirm_text} />
+          <Button size="sm" variant="destructive" disabled={busy || typed.trim().toLowerCase() !== samples.confirm_text} onClick={remove}>{busy ? "Removing…" : "Remove"}</Button>
+          <Button size="sm" variant="ghost" onClick={() => { setOpen(false); setTyped(""); }}>Cancel</Button>
+          {err && <span className="text-xs text-destructive">{err}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function BrandsPage() {
   const { me, brandId } = useApp();
   const { data, error } = usePoll<Brand[]>("/brands", 0);
@@ -282,6 +317,7 @@ export default function BrandsPage() {
         </div>
       )}
       <ErrorNote error={error} />
+      {me?.is_super_admin && <SampleBrandsNotice />}
       {!google && <p className="mb-4 text-xs text-amber-600">&quot;Connect with Google&quot; is unavailable until the Google OAuth client is configured on the server.</p>}
       {adding && <NewBrand google={google} onCancel={() => setAdding(false)} />}
       <div className="flex flex-col gap-4">

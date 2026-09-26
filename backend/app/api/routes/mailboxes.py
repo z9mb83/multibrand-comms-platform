@@ -89,6 +89,10 @@ def add_mailbox(db: Session, brand: Brand, address: str, role: str, user_id: int
         raise HTTPException(409, "This mailbox is already added to the brand")
     order = len(db.scalars(select(SenderAccount.id).where(SenderAccount.brand_id == brand.id,
                                                           SenderAccount.channel == "email")).all()) + 1
+    real_master = db.scalar(select(SenderAccount.id).where(SenderAccount.brand_id == brand.id, SenderAccount.channel == "email",
+                                                        SenderAccount.is_master, SenderAccount.provider != "mock"))
+    if real_master is None:
+        role = "master"  # the first real mailbox of a brand is always its master
     if role == "master":
         for m in db.scalars(select(SenderAccount).where(SenderAccount.brand_id == brand.id, SenderAccount.is_master)):
             m.is_master = False
@@ -179,3 +183,19 @@ def disconnect(sid: int, ctx: BrandCtx = Depends(brand_ctx), db: Session = Depen
     audit(db, "mailbox.disconnected", user_id=ctx.user.id, brand_id=ctx.brand_id, entity_type="sender", entity_id=acc.id)
     db.commit()
     return list_for(db, ctx.brand_id)
+
+
+def promote_master_if_missing(db: Session, brand_id: int) -> None:
+    """After a master mailbox is removed, make the next real mailbox the master."""
+    has = db.scalar(select(SenderAccount.id).where(SenderAccount.brand_id == brand_id, SenderAccount.channel == "email",
+                                                   SenderAccount.is_master, SenderAccount.provider != "mock"))
+    if has:
+        return
+    nxt = db.scalars(select(SenderAccount).where(SenderAccount.brand_id == brand_id, SenderAccount.channel == "email",
+                                                 SenderAccount.provider != "mock", SenderAccount.is_notification_sender.is_(False))
+                     .order_by(SenderAccount.rotation_order, SenderAccount.id)).first()
+    brand = db.get(Brand, brand_id)
+    if nxt is not None:
+        nxt.is_master, nxt.rotation_order = True, 0
+        if brand is not None:
+            brand.master_email = nxt.address

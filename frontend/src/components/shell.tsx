@@ -3,11 +3,11 @@
 import {
   BarChart3, Building2, CheckSquare, ClipboardList, FileSpreadsheet, Inbox, LayoutDashboard, LogOut, Mail, Menu,
   MessageCircle, Megaphone, PenSquare, Repeat, Settings, Smartphone, Users, X,
-  Send, UserCog,
+  PanelLeftClose, PanelLeftOpen, Send, UserCog,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useApp } from "@/components/app-context";
 import { Select } from "@/components/ui/input";
@@ -38,6 +38,16 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const { me, brands, brandId, setBrandId } = useApp();
   const [open, setOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    try { setCollapsed(window.localStorage.getItem("comms_sidebar") === "collapsed"); } catch { /* ignore */ }
+  }, []);
+  const toggleSidebar = () => {
+    setCollapsed((c) => {
+      try { window.localStorage.setItem("comms_sidebar", c ? "open" : "collapsed"); } catch { /* ignore */ }
+      return !c;
+    });
+  };
 
   const nav = (
     <nav className="flex flex-col gap-0.5 p-2">
@@ -57,10 +67,17 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen">
-      <aside className="sticky top-0 hidden h-screen w-60 shrink-0 overflow-y-auto border-r bg-card lg:block">
-        <div className="flex h-14 items-center border-b px-4 font-semibold">Comms Hub</div>
-        {nav}
-      </aside>
+      {!collapsed && (
+        <aside className="sticky top-0 hidden h-screen w-60 shrink-0 overflow-y-auto border-r bg-card lg:block">
+          <div className="flex h-14 items-center justify-between border-b px-4 font-semibold">
+            Comms Hub
+            <button aria-label="Hide menu" title="Hide menu" className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={toggleSidebar}>
+              <PanelLeftClose className="h-4 w-4" />
+            </button>
+          </div>
+          {nav}
+        </aside>
+      )}
       {open && (
         <div className="fixed inset-0 z-40 lg:hidden">
           <div className="absolute inset-0 bg-black/40" onClick={() => setOpen(false)} />
@@ -76,6 +93,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur">
           <button className="lg:hidden" aria-label="Open menu" onClick={() => setOpen(true)}><Menu className="h-5 w-5" /></button>
+          {collapsed && (
+            <button className="hidden rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground lg:block" aria-label="Show menu" title="Show menu" onClick={toggleSidebar}>
+              <PanelLeftOpen className="h-5 w-5" />
+            </button>
+          )}
           <Select aria-label="Brand" className="w-48 sm:w-64" value={String(brandId)}
             onChange={(e) => setBrandId(e.target.value === "all" ? "all" : Number(e.target.value))}>
             {me?.is_super_admin && <option value="all">All Brands</option>}

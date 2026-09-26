@@ -551,3 +551,32 @@ def test_delete_brand_with_full_history(client, db, world):
     assert client.post(f"/api/brands/{a.id}/delete", headers=h, json={"confirm_name": a.name}).status_code == 200
     db.expire_all()
     assert db.query(Brand).count() == 1
+
+
+def test_remove_sample_brands(client, db, world):
+    from app.models import Brand, User
+    from app.services.bootstrap import seed_brands
+    admin = db.get(User, world["admin"].id)
+    seed_brands(db, admin)
+    db.commit()
+    h = auth(world["admin"])
+    listed = client.get("/api/brands/samples", headers=h).json()
+    assert {b["name"] for b in listed["brands"]} >= {"Shaadi Bells", "Property Experts Group", "Skyline Capital"}
+    assert client.post("/api/brands/samples/remove", headers=h, json={"confirm": "yes"}).status_code == 400
+    assert client.post("/api/brands/samples/remove", headers=auth(world["agent_a"]), json={"confirm": "remove sample brands"}).status_code == 403  # noqa: E501
+    r = client.post("/api/brands/samples/remove", headers=h, json={"confirm": "Remove sample brands"})
+    assert r.status_code == 200 and len(r.json()["deleted"]) >= 5
+    db.expire_all()
+    slugs = {b.slug for b in db.query(Brand)}
+    assert not slugs & {"marketing", "staffing", "shaadibells", "property", "skyline"}
+
+
+def test_first_real_mailbox_becomes_master_and_is_promoted_after_removal(client, db, world):
+    from app.models import SenderAccount
+    h, bid = auth(world["admin"]), world["a"].id  # brand a only has demo (mock) mailboxes
+    first = client.post(f"/api/brands/{bid}/mailboxes", headers=h, json={"address": "linkwithmarketing@gmail.com", "role": "sub"}).json()
+    second = client.post(f"/api/brands/{bid}/mailboxes", headers=h, json={"address": "sub1@gmail.com", "role": "sub"}).json()
+    assert first["role"] == "master" and second["role"] == "sub"
+    assert client.delete(f"/api/brands/{bid}/senders/{first['id']}", headers=h).status_code == 204
+    db.expire_all()
+    assert db.get(SenderAccount, second["id"]).is_master is True

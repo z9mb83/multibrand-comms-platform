@@ -21,6 +21,44 @@ from app.services.common import audit
 router = APIRouter(prefix="/brands", tags=["brands"])
 
 
+SAMPLE_CONFIRM = "remove sample brands"
+
+
+@router.get("/samples")
+def sample_brands(_: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    """The example brands created at first setup (same slugs as bootstrap.BRANDS) that still exist."""
+    from app.models import SenderAccount
+    from app.services.bootstrap import BRANDS
+    slugs = [slug for slug, _, _ in BRANDS]
+    out = []
+    for b in db.scalars(select(Brand).where(Brand.slug.in_(slugs)).order_by(Brand.name)):
+        demo = db.scalar(select(func.count()).select_from(SenderAccount).where(
+            SenderAccount.brand_id == b.id, SenderAccount.provider == "mock", SenderAccount.address.like("%.example.com")))
+        out.append({"id": b.id, "name": b.name, "has_demo_mailboxes": bool(demo)})
+    return {"brands": out, "confirm_text": SAMPLE_CONFIRM}
+
+
+@router.post("/samples/remove")
+def remove_sample_brands(body: dict, admin: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    """Delete all example brands from first setup, with everything in them. Requires typing the confirmation text."""
+    from sqlalchemy import delete, update
+
+    from app.models import AuditLog
+    from app.services.bootstrap import BRANDS
+    if str(body.get("confirm", "")).strip().lower() != SAMPLE_CONFIRM:
+        raise HTTPException(400, f'Type "{SAMPLE_CONFIRM}" to confirm')
+    slugs = [slug for slug, _, _ in BRANDS]
+    ids = list(db.scalars(select(Brand.id).where(Brand.slug.in_(slugs))))
+    names = list(db.scalars(select(Brand.name).where(Brand.id.in_(ids or [0]))))
+    if ids:
+        db.execute(update(AuditLog).where(AuditLog.brand_id.in_(ids)).values(brand_id=None))
+        db.execute(delete(Brand).where(Brand.id.in_(ids)))
+    db.expunge_all()
+    audit(db, "brand.samples_removed", user_id=admin.id, names=names)
+    db.commit()
+    return {"deleted": names}
+
+
 @router.get("", response_model=list[BrandOut])
 def list_brands(user: User = Depends(current_user), db: Session = Depends(get_db)):
     ids = accessible_brand_ids(db, user)
