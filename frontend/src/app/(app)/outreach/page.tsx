@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, FileUp, Octagon, Play, Plus, RefreshCw, Sparkles, Star } from "lucide-react";
+import { CheckCircle2, FileUp, Octagon, Play, Plus, RefreshCw, Sparkles, Star, Trash2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useState } from "react";
 
 import { useApp, usePoll } from "@/components/app-context";
@@ -113,16 +113,43 @@ function LeadsTab({ base, role, refreshOverview }: { base: string; role: string;
   const [nl, setNl] = useState({ person_name: "", email: "", details: "" });
   const [note, setNote] = useState<RunResult | null>(null);
   const [info, setInfo] = useState<string | null>(null);
-  const params = new URLSearchParams({ limit: "500" });
+  const [page, setPage] = useState(0);
+  const [allMatching, setAllMatching] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const PAGE = 100;
+  const params = new URLSearchParams({ limit: String(PAGE), offset: String(page * PAGE) });
   if (filter) params.set("status", filter);
   if (q) params.set("q", q);
   const { data, error, reload } = usePoll<{ total: number; items: Lead[] }>(`${base}/leads?${params}`, 20000);
   const { busy, err, run } = useRunner();
   const canEdit = RANK[role] >= 2;
   const canApprove = RANK[role] >= 3;
-  const refresh = () => { reload(); refreshOverview(); };
   const items = data?.items ?? [];
-  const toggle = (id: number) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const total = data?.total ?? 0;
+  const clearSelection = () => { setSelected(new Set()); setAllMatching(false); setConfirmDelete(false); };
+  const refresh = () => { reload(); refreshOverview(); };
+  useEffect(() => { clearSelection(); setPage(0); }, [filter, q]);
+  const toggle = (id: number) => {
+    setAllMatching(false); setConfirmDelete(false);
+    setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  };
+  const pageAllSelected = items.length > 0 && items.every((l) => selected.has(l.id));
+  const togglePage = () => {
+    setAllMatching(false); setConfirmDelete(false);
+    setSelected((s) => { const n = new Set(s); items.forEach((l) => (pageAllSelected ? n.delete(l.id) : n.add(l.id))); return n; });
+  };
+  const selCount = allMatching ? total : selected.size;
+  const doDelete = () => run(async () => {
+    const r = await api<{ deleted: number }>(`${base}/leads/delete`, { method: "POST",
+      json: allMatching ? { all_matching: true, status: filter || null, q: q || null } : { ids: [...selected] } });
+    setInfo(`Deleted ${r.deleted} lead${r.deleted === 1 ? "" : "s"}. The Send Log is kept, so anyone already emailed won't be emailed again.`);
+    clearSelection(); setPage(0); refresh();
+  });
+  const deleteOne = (id: number) => run(async () => {
+    await api(`${base}/leads/${id}`, { method: "DELETE" });
+    setSelected((s) => { const n = new Set(s); n.delete(id); return n; });
+    setInfo("Lead deleted."); refresh();
+  });
 
   return (
     <>
@@ -140,12 +167,33 @@ function LeadsTab({ base, role, refreshOverview }: { base: string; role: string;
           {canApprove && <Button size="sm" variant="outline" disabled={busy} onClick={() => run(async () => {
             setNote(await api<RunResult>(`${base}/generate`, { method: "POST" })); refresh();
           })}><Sparkles className="h-4 w-4" />{busy ? "Working…" : "Write drafts now"}</Button>}
-          {canApprove && <Button size="sm" disabled={!selected.size || busy} onClick={() => run(async () => {
+          {canApprove && <Button size="sm" disabled={!selected.size || allMatching || busy} onClick={() => run(async () => {
             await api(`${base}/leads/approve`, { method: "POST", json: { ids: [...selected], approval: "Yes" } });
-            setSelected(new Set()); refresh();
-          })}><CheckCircle2 className="h-4 w-4" />Approve {selected.size || ""}</Button>}
+            clearSelection(); refresh();
+          })}><CheckCircle2 className="h-4 w-4" />Approve {selected.size && !allMatching ? selected.size : ""}</Button>}
+          {canApprove && (confirmDelete ? (
+            <>
+              <Button size="sm" variant="destructive" disabled={busy} onClick={doDelete}><Trash2 className="h-4 w-4" />Yes, delete {selCount.toLocaleString()}</Button>
+              <Button size="sm" variant="ghost" onClick={() => setConfirmDelete(false)}>Cancel</Button>
+            </>
+          ) : (
+            <Button size="sm" variant="outline" className="text-destructive" disabled={!selCount || busy} onClick={() => setConfirmDelete(true)}>
+              <Trash2 className="h-4 w-4" />Delete {selCount ? selCount.toLocaleString() : ""}</Button>
+          ))}
         </div>
       </div>
+      {canApprove && pageAllSelected && total > items.length && (
+        <div className="mb-3 rounded-md border bg-muted/40 px-3 py-2 text-sm">
+          {allMatching ? (
+            <>All <b>{total.toLocaleString()}</b> {filter || q ? "matching " : ""}leads are selected.{" "}
+              <button className="text-primary hover:underline" onClick={clearSelection}>Clear selection</button></>
+          ) : (
+            <>All {items.length} leads on this page are selected.{" "}
+              <button className="font-medium text-primary hover:underline" onClick={() => { setAllMatching(true); setConfirmDelete(false); }}>
+                Select all {total.toLocaleString()} {filter || q ? "matching " : ""}leads</button></>
+          )}
+        </div>
+      )}
       <RunNote r={note} />
       {info && <p className="mb-3 text-sm text-emerald-600">{info}</p>}
       <ErrorNote error={err || error} />
@@ -166,15 +214,16 @@ function LeadsTab({ base, role, refreshOverview }: { base: string; role: string;
         <CardContent className="p-0">
           <Table>
             <THead><TR>
-              <TH className="w-8" />
-              <TH>#</TH><TH>Lead</TH><TH>Status</TH><TH>Approval</TH><TH>Subject</TH><TH>Sent</TH><TH>Note</TH>
+              <TH className="w-8">{canApprove && items.length > 0 && (
+                <input type="checkbox" checked={pageAllSelected} onChange={togglePage} aria-label="Select all on this page" />)}</TH>
+              <TH>#</TH><TH>Lead</TH><TH>Status</TH><TH>Approval</TH><TH>Subject</TH><TH>Sent</TH><TH>Note</TH><TH className="w-8" />
             </TR></THead>
             <TBody>
               {items.map((l) => (
                 <Fragment key={l.id}>
                   <TR className="cursor-pointer" onClick={() => setOpen(open === l.id ? null : l.id)}>
                     <TD onClick={(e) => e.stopPropagation()}>
-                      {canApprove && l.status !== "Sent" && <input type="checkbox" checked={selected.has(l.id)} onChange={() => toggle(l.id)} aria-label="Select lead" />}
+                      {canApprove && <input type="checkbox" checked={allMatching || selected.has(l.id)} onChange={() => toggle(l.id)} aria-label="Select lead" />}
                     </TD>
                     <TD className="text-xs text-muted-foreground">{l.id}</TD>
                     <TD><div className="font-medium">{l.person_name || "—"}</div><div className="text-xs text-muted-foreground">{l.email}</div></TD>
@@ -192,20 +241,32 @@ function LeadsTab({ base, role, refreshOverview }: { base: string; role: string;
                     <TD className="max-w-[260px] truncate">{l.subject || <span className="text-muted-foreground">—</span>}</TD>
                     <TD className="whitespace-nowrap text-xs">{l.sent_at ? <>{fmt(l.sent_at)}<div className="text-muted-foreground">{l.sent_from}</div></> : "—"}</TD>
                     <TD className="max-w-[240px] truncate text-xs text-muted-foreground" title={l.error}>{l.error}</TD>
+                    <TD onClick={(e) => e.stopPropagation()}>
+                      {canApprove && <button className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" title="Delete lead"
+                        aria-label={`Delete ${l.email}`} disabled={busy} onClick={() => deleteOne(l.id)}><Trash2 className="h-4 w-4" /></button>}
+                    </TD>
                   </TR>
                   {open === l.id && (
-                    <tr><td colSpan={8}>
+                    <tr><td colSpan={9}>
                       <LeadEditor base={base} lead={l} canApprove={canApprove} onSaved={() => { setOpen(null); refresh(); }} />
                     </td></tr>
                   )}
                 </Fragment>
               ))}
-              {!items.length && <TR><TD colSpan={8} className="py-8 text-center text-sm text-muted-foreground">No leads yet. Add one or import your Sheet&apos;s lead tab.</TD></TR>}
+              {!items.length && <TR><TD colSpan={9} className="py-8 text-center text-sm text-muted-foreground">No leads yet. Add one or import your Sheet&apos;s lead tab.</TD></TR>}
             </TBody>
           </Table>
         </CardContent>
       </Card>
-      {data && data.total > items.length && <p className="mt-2 text-xs text-muted-foreground">Showing {items.length} of {data.total}. Use the filter or search to narrow.</p>}
+      {total > PAGE && (
+        <div className="mt-3 flex items-center justify-between text-sm">
+          <span className="text-muted-foreground">{(page * PAGE + 1).toLocaleString()}–{(page * PAGE + items.length).toLocaleString()} of {total.toLocaleString()}</span>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage(page - 1)}>Previous</Button>
+            <Button size="sm" variant="outline" disabled={(page + 1) * PAGE >= total} onClick={() => setPage(page + 1)}>Next</Button>
+          </div>
+        </div>
+      )}
     </>
   );
 }

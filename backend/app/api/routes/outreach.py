@@ -66,6 +66,13 @@ class ApproveIn(BaseModel):
     approval: str = "Yes"
 
 
+class BulkDeleteIn(BaseModel):
+    ids: list[int] = []
+    all_matching: bool = False  # delete every lead matching the filter below (ignores ids)
+    status: str | None = None
+    q: str | None = None
+
+
 class MailboxPatch(BaseModel):
     enabled: bool | None = None
     stage: str | None = None
@@ -166,10 +173,7 @@ def update_settings(body: SettingsIn, ctx: BrandCtx = Depends(brand_ctx), db: Se
 
 
 # ------------------------------------------------------------------ leads
-@router.get("/leads")
-def list_leads(status: str | None = None, q: str | None = None, limit: int = Query(100, le=1000), offset: int = 0,
-               ctx: BrandCtx = Depends(brand_ctx), db: Session = Depends(get_db)):
-    stmt = select(OutreachLead).where(OutreachLead.brand_id == ctx.brand_id)
+def _filtered(stmt, status: str | None, q: str | None):
     if status == "Approved-ready":
         stmt = stmt.where(func.lower(func.trim(OutreachLead.approval)) == "yes", OutreachLead.status.in_(engine.SENDABLE_STATUSES))
     elif status == "Needs approval":
@@ -180,6 +184,13 @@ def list_leads(status: str | None = None, q: str | None = None, limit: int = Que
         like = f"%{q.lower()}%"
         stmt = stmt.where(or_(func.lower(OutreachLead.person_name).like(like), OutreachLead.email.like(like),
                               func.lower(OutreachLead.subject).like(like)))
+    return stmt
+
+
+@router.get("/leads")
+def list_leads(status: str | None = None, q: str | None = None, limit: int = Query(100, le=1000), offset: int = 0,
+               ctx: BrandCtx = Depends(brand_ctx), db: Session = Depends(get_db)):
+    stmt = _filtered(select(OutreachLead).where(OutreachLead.brand_id == ctx.brand_id), status, q)
     total = db.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = db.scalars(stmt.order_by(OutreachLead.id).limit(limit).offset(offset)).all()
     return {"total": total, "items": [lead_out(x) for x in rows]}
@@ -232,6 +243,28 @@ def approve(body: ApproveIn, ctx: BrandCtx = Depends(brand_ctx), db: Session = D
     audit(db, "outreach.approved" if value else "outreach.unapproved", user_id=ctx.user.id, brand_id=ctx.brand_id, count=len(rows))
     db.commit()
     return {"updated": len(rows)}
+
+
+@router.post("/leads/delete")
+def delete_leads(body: BulkDeleteIn, ctx: BrandCtx = Depends(brand_ctx), db: Session = Depends(get_db)):
+    """Delete selected leads, or every lead matching a filter. The Send Log is kept, so people already emailed
+    are still never emailed again by this brand."""
+    from sqlalchemy import delete as sa_delete
+    ctx.require(Role.MANAGER)
+    if body.all_matching:
+        ids_q = _filtered(select(OutreachLead.id).where(OutreachLead.brand_id == ctx.brand_id), body.status, body.q)
+    else:
+        if not body.ids:
+            return {"deleted": 0}
+        ids_q = select(OutreachLead.id).where(OutreachLead.brand_id == ctx.brand_id, OutreachLead.id.in_(body.ids))
+    ids = list(db.scalars(ids_q))
+    if ids:
+        db.execute(OutreachSendLog.__table__.update().where(OutreachSendLog.lead_id.in_(ids)).values(lead_id=None))
+        db.execute(sa_delete(OutreachLead).where(OutreachLead.id.in_(ids)))
+    audit(db, "outreach.leads_deleted", user_id=ctx.user.id, brand_id=ctx.brand_id, count=len(ids),
+          all_matching=body.all_matching, status=body.status or "", q=body.q or "")
+    db.commit()
+    return {"deleted": len(ids)}
 
 
 @router.delete("/leads/{lead_id}", status_code=204)

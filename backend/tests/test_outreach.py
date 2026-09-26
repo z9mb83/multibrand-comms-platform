@@ -445,3 +445,21 @@ def test_openai_request_and_parsing(monkeypatch, db, world):
     assert seen["url"].endswith("/v1/responses") and seen["auth"] == "Bearer sk-test"
     assert seen["body"]["text"]["format"]["schema"]["required"] == ["subject", "body"]
     assert "Recipient details: 3BHK in Mohali" in seen["body"]["input"]
+
+
+def test_delete_single_selected_and_all_matching(client, db, world):
+    a = world["a"]
+    h, base = auth(world["agent_a"]), f"/api/brands/{a.id}/outreach"
+    ids = [lead(db, a, f"t{i}@lead.io", status="Pending" if i < 6 else "Generated").id for i in range(10)]
+    other = lead(db, world["b"], "keep@lead.io").id
+    db.add(OutreachSendLog(brand_id=a.id, lead_id=ids[9], logged_at=MON_11, sender_email="s@x.io",
+                           lead_email="t9@lead.io", result="Sent"))
+    db.commit()
+    assert client.delete(f"{base}/leads/{ids[0]}", headers=h).status_code == 204
+    assert client.post(f"{base}/leads/delete", headers=h, json={"ids": [ids[1], ids[2], other]}).json() == {"deleted": 2}
+    assert client.post(f"{base}/leads/delete", headers=h, json={"all_matching": True, "status": "Pending"}).json() == {"deleted": 3}
+    assert client.post(f"{base}/leads/delete", headers=h, json={"all_matching": True}).json() == {"deleted": 4}
+    assert db.query(OutreachLead).count() == 1  # the other brand's lead is untouched
+    assert db.query(OutreachSendLog).one().lead_id is None  # history kept for duplicate protection
+    viewer = auth(world["admin"])
+    assert client.post(f"{base}/leads/delete", headers=viewer, json={"all_matching": True}).status_code == 200
