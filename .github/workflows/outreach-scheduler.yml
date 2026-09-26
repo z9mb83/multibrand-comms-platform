@@ -1,0 +1,53 @@
+name: Email outreach schedule
+
+# Replaces the Cloud Scheduler jobs of the Sheet automation:
+#   every 15 min, 09:30-18:29 India time -> one outreach pass over all brands (at most 1 email per brand)
+#   09:00 India time -> previous-day report, 18:00 India time -> today's report
+# Authenticates to the API with GitHub's OIDC token (no stored secret). Times below are UTC.
+on:
+  schedule:
+    - cron: "*/15 4-12 * * *"
+    - cron: "30 3 * * *"
+    - cron: "30 12 * * *"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "What to run"
+        type: choice
+        options: [tick, morning-report, evening-report]
+        default: tick
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: outreach-${{ github.event.schedule || inputs.job }}
+  cancel-in-progress: false
+
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      API: ${{ vars.COMMS_API_URL || 'https://comms-api.vercel.app' }}
+    steps:
+      - name: Pick job
+        id: pick
+        run: |
+          case "${{ github.event.schedule }}" in
+            "30 3 * * *")  echo "path=/internal/outreach/report/morning" >> "$GITHUB_OUTPUT" ;;
+            "30 12 * * *") echo "path=/internal/outreach/report/evening" >> "$GITHUB_OUTPUT" ;;
+            "*/15 4-12 * * *") echo "path=/internal/outreach/tick" >> "$GITHUB_OUTPUT" ;;
+            *) case "${{ inputs.job }}" in
+                 morning-report) echo "path=/internal/outreach/report/morning" >> "$GITHUB_OUTPUT" ;;
+                 evening-report) echo "path=/internal/outreach/report/evening" >> "$GITHUB_OUTPUT" ;;
+                 *) echo "path=/internal/outreach/tick" >> "$GITHUB_OUTPUT" ;;
+               esac ;;
+          esac
+      - name: Call Comms Hub
+        run: |
+          TOKEN=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=comms-hub-scheduler" | jq -r .value)
+          curl -sS --fail-with-body --max-time 90 -X POST -H "Authorization: Bearer $TOKEN" "$API${{ steps.pick.outputs.path }}"
+          echo
