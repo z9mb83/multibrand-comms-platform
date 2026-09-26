@@ -21,7 +21,7 @@ type Settings = {
 type Global = {
   cross_brand_duplicate_days: number; max_drafts_per_brand_per_run: number; openai_model: string; reports_enabled: boolean;
   report_recipient: string; report_sender: string; last_run_at: string | null; last_run_summary: string;
-  openai_configured: boolean; live_sending: boolean;
+  openai_configured: boolean; openai_key_hint: string; openai_key_from_server: boolean; live_sending: boolean;
 };
 type Overview = { settings: Settings; counts: Record<string, number>; approved_ready: number; sent_today: number;
   within_hours: boolean; local_time: string; role: string; global: Global };
@@ -468,6 +468,38 @@ function SettingsTab({ base, settings, role, onSaved }: { base: string; settings
 }
 
 // ------------------------------------------------------------------ automation (Super Admin)
+function OpenAIKeyCard({ global, onSaved }: { global: Global; onSaved: () => void }) {
+  const [key, setKey] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const { busy, err, run } = useRunner();
+  const save = (value: string | null) => run(async () => {
+    await api("/outreach/openai-key", { method: "PUT", json: { key: value } });
+    setKey(""); setMsg(value ? "Key saved. Drafts will be written on the next run, or click Write drafts now." : "Key removed."); onSaved();
+  });
+  return (
+    <Card><CardHeader><CardTitle className="flex items-center gap-2 text-base">AI email writing (OpenAI)
+      <Badge tone={global.openai_configured ? "green" : "amber"}>{global.openai_configured ? "On" : "Needs a key"}</Badge></CardTitle>
+      <CardDescription>
+        Drafts are written with the same prompt as your Sheet automation: only the lead&apos;s name and details plus each brand&apos;s approved facts,
+        80–130 words, one call to action, the opt-out line, then the brand&apos;s fixed signature.
+        {global.openai_key_from_server ? " A key is set on the server." : global.openai_key_hint ? ` Saved key ends in …${global.openai_key_hint}.` : ""}
+      </CardDescription></CardHeader>
+      <CardContent className="flex flex-wrap items-end gap-2">
+        {!global.openai_key_from_server && (
+          <>
+            <Field label="OpenAI API key (stored encrypted, never shown again)">
+              <Input className="w-96" type="password" autoComplete="off" placeholder="sk-…" value={key} onChange={(e) => setKey(e.target.value)} />
+            </Field>
+            <Button disabled={busy || !key.trim()} onClick={() => save(key.trim())}>Save key</Button>
+            {global.openai_key_hint && <Button variant="ghost" disabled={busy} onClick={() => save(null)}>Remove key</Button>}
+          </>
+        )}
+        {msg && <span className="text-sm text-emerald-600">{msg}</span>}
+        <div className="w-full"><ErrorNote error={err} /></div>
+      </CardContent></Card>
+  );
+}
+
 function AutomationTab({ isSuper, global, onSaved }: { isSuper: boolean; global: Global; onSaved: () => void }) {
   const [g, setG] = useState(global);
   const [slot, setSlot] = useState<"morning" | "evening">("evening");
@@ -491,6 +523,7 @@ function AutomationTab({ isSuper, global, onSaved }: { isSuper: boolean; global:
             <Play className="h-4 w-4" />{busy ? "Running…" : "Run all brands now"}</Button></div>
           {results?.map((r, i) => <RunNote key={i} r={r} />)}
         </CardContent></Card>
+      <OpenAIKeyCard global={global} onSaved={onSaved} />
       <Card><CardHeader><CardTitle className="text-base">Settings for all brands</CardTitle></CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-3">
           <Field label="Cross-brand duplicate window (days, 0 = off)"><Input type="number" min={0} value={g.cross_brand_duplicate_days} onChange={(e) => setG({ ...g, cross_brand_duplicate_days: Number(e.target.value) })} /></Field>
@@ -571,7 +604,7 @@ export default function OutreachPage() {
           <div className="text-xs text-muted-foreground">
             India time {ov.local_time} · {ov.within_hours ? "inside" : "outside"} sending hours ({s.sending_start_time}–{s.sending_end_time})
             {!ov.global.live_sending && " · Server is in simulation mode: emails are recorded but not delivered"}
-            {!ov.global.openai_configured && " · OpenAI key not set on the server, so drafts can't be written"}
+            {!ov.global.openai_configured && " · No OpenAI key yet, so drafts can't be written (Super Admin: add it under Automation)"}
           </div>
         </div>
         {admin && <Button size="sm" variant={s.emergency_stop ? "default" : "destructive"} disabled={busy} onClick={toggleStop}>

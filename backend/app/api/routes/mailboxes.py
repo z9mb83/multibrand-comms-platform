@@ -127,12 +127,13 @@ def verify_confirm(sid: int, body: CodeIn, ctx: BrandCtx = Depends(brand_ctx), d
 
 
 @router.post("/{sid}/google/start")
-def google_connect_start(sid: int, ctx: BrandCtx = Depends(brand_ctx), db: Session = Depends(get_db)):
+def google_connect_start(sid: int, return_to: str = "brands", ctx: BrandCtx = Depends(brand_ctx),
+                         db: Session = Depends(get_db)):
     """Returns the Google URL to open. Sets the browser-binding cookie on this (same-origin) response."""
     ctx.require(Role.BRAND_ADMIN)
     acc = _get(db, ctx.brand_id, sid)
     url, binding = auth_flows.google_start("mailbox", user_id=ctx.user.id, sender_account_id=acc.id,
-                                           login_hint=acc.address)
+                                           login_hint=acc.address, mode="accounts" if return_to == "accounts" else "brands")
     resp = JSONResponse({"url": url})
     resp.set_cookie("g_bind", binding, max_age=600, httponly=True, samesite="lax", path="/api/auth/google",
                     secure=get_settings().app_env == "production")

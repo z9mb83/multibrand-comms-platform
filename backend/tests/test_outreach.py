@@ -463,3 +463,44 @@ def test_delete_single_selected_and_all_matching(client, db, world):
     assert db.query(OutreachSendLog).one().lead_id is None  # history kept for duplicate protection
     viewer = auth(world["admin"])
     assert client.post(f"{base}/leads/delete", headers=viewer, json={"all_matching": True}).status_code == 200
+
+
+def test_openai_key_saved_in_app_is_encrypted_and_used(client, db, world, monkeypatch):
+    from app.models import OutreachGlobal
+    from app.services.outreach import generator
+    h = auth(world["admin"])
+    assert client.put("/api/outreach/openai-key", headers=h, json={"key": "not-a-key"}).status_code == 400
+    out = client.put("/api/outreach/openai-key", headers=h, json={"key": "sk-test-abcdefghijklmnop1234"}).json()
+    assert out["openai_configured"] and out["openai_key_hint"] == "1234"
+    row = db.get(OutreachGlobal, 1)
+    db.refresh(row)
+    assert "abcdefgh" not in row.openai_key_ciphertext
+    seen = {}
+
+    def fake(model, brand, s, name, details, key=None):
+        seen["key"] = key
+        return "S", "B"
+    monkeypatch.setattr(generator, "generate_email", fake)
+    ready(db, world["a"])
+    lead(db, world["a"], "x@lead.io", approved=False, status="Pending", subject="", body="")
+    engine.run_unified(db, now=MON_11)
+    assert seen["key"] == "sk-test-abcdefghijklmnop1234"
+    assert client.put("/api/outreach/openai-key", headers=auth(world["agent_a"]), json={"key": "sk-x"}).status_code == 403
+
+
+def test_delete_demo_sender_but_keep_ones_with_history(client, db, world):
+    from app.models import InboundMessage, SenderAccount
+    h = auth(world["admin"])
+    s1, s2 = world["senders_a"][0], world["senders_a"][1]
+    s1_id = s1.id
+    assert client.delete(f"/api/brands/{world['a'].id}/senders/{s1_id}", headers=h).status_code == 204
+    s2.provider = "gmail"
+    db.add(InboundMessage(brand_id=world["a"].id, sender_account_id=s2.id, channel="email", from_address="a@b.io",
+                          provider_message_id="p1"))
+    db.commit()
+    s2_id = s2.id
+    r = client.delete(f"/api/brands/{world['a'].id}/senders/{s2_id}", headers=h)
+    assert r.status_code == 409 and "Pause or disconnect" in r.json()["detail"]
+    db.expire_all()
+    assert db.query(SenderAccount).filter(SenderAccount.id == s1_id).count() == 0
+    assert client.delete(f"/api/brands/{world['a'].id}/senders/{s2_id}", headers=auth(world["agent_a"])).status_code == 403

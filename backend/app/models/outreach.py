@@ -118,6 +118,8 @@ class OutreachGlobal(Base):
     cross_brand_duplicate_days: Mapped[int] = mapped_column(Integer, default=0)
     max_drafts_per_brand_per_run: Mapped[int] = mapped_column(Integer, default=20)
     openai_model: Mapped[str] = mapped_column(String(80), default="gpt-5-mini")
+    openai_key_ciphertext: Mapped[str | None] = mapped_column(Text)  # entered in the app; encrypted at rest
+    openai_key_hint: Mapped[str] = mapped_column(String(12), default="", server_default="")
     reports_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     report_recipient: Mapped[str] = mapped_column(String(320), default="info@99marketingservices.com")
     report_sender: Mapped[str] = mapped_column(String(320), default="linkwithmarketing@gmail.com")

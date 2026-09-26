@@ -232,7 +232,12 @@ class BrandRunner:
         self.tz = ZoneInfo(brand.timezone or "Asia/Kolkata")
         self.now = (now or datetime.now(timezone.utc)).astimezone(self.tz)
         self.deadline = deadline
-        self.generate = generate or generator.generate_email
+        if generate is None:
+            key = generator.openai_key(db)
+
+            def generate(*a, _key=key):
+                return generator.generate_email(*a, key=_key)
+        self.generate = generate
 
     # --- queries standing in for the Send Log / Suppression tab reads
     def _suppressed(self, email: str) -> bool:

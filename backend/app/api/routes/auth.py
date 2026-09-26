@@ -218,13 +218,18 @@ def google_callback(code: str | None = None, state: str | None = None, error: st
     except DomainError:
         pass
     if kind == "mailbox":
+        page = "/brands"
+        try:
+            page = "/accounts/email" if auth_flows._unsign(state).get("m") == "accounts" else "/brands"
+        except DomainError:
+            pass
         try:
             acc = auth_flows.connect_mailbox(db, code=code, state=state, binding=g_bind)
             db.commit()
-            r = RedirectResponse(f"/brands?brand={acc.brand_id}&connected={quote(acc.address)}", status_code=302)
+            r = RedirectResponse(f"{page}?brand={acc.brand_id}&connected={quote(acc.address)}", status_code=302)
         except DomainError as exc:
             db.rollback()
-            r = RedirectResponse("/brands?error=" + quote(str(exc)), status_code=302)
+            r = RedirectResponse(f"{page}?error=" + quote(str(exc)), status_code=302)
         r.delete_cookie(BIND_COOKIE, path="/api/auth/google")
         return r
     try:

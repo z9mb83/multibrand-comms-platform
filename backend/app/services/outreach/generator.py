@@ -85,10 +85,21 @@ def build_request(model: str, brand_name: str, brand_facts: str, person_name: st
     }
 
 
-def generate_email(model: str, brand_name: str, settings, person_name: str, details: str) -> tuple[str, str]:
+def openai_key(db=None) -> str:
+    """Server env var OPENAI_API_KEY first, otherwise the key the Super Admin saved in the app."""
     key = get_settings().openai_api_key
+    if key or db is None:
+        return key
+    from app.models import OutreachGlobal
+    from app.services.crypto import decrypt
+    g = db.get(OutreachGlobal, 1)
+    return decrypt(g.openai_key_ciphertext) if g and g.openai_key_ciphertext else ""
+
+
+def generate_email(model: str, brand_name: str, settings, person_name: str, details: str, key: str | None = None) -> tuple[str, str]:
+    key = key if key is not None else get_settings().openai_api_key
     if not key:
-        raise RuntimeError("OPENAI_API_KEY is not set on the server")
+        raise RuntimeError("No OpenAI API key yet. Add it under Email Outreach → Automation.")
     resp = httpx.post(OPENAI_URL, json=build_request(model, brand_name, settings.brand_facts, person_name, details),
                       headers={"Authorization": f"Bearer {key}"}, timeout=45)
     if resp.status_code >= 400:

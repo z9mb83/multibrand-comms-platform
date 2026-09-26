@@ -114,11 +114,13 @@ def lead_out(x: OutreachLead) -> dict:
 
 def global_out(g) -> dict:
     s = get_settings()
+    has_key = bool(s.openai_api_key or g.openai_key_ciphertext)
     return {"cross_brand_duplicate_days": g.cross_brand_duplicate_days,
             "max_drafts_per_brand_per_run": g.max_drafts_per_brand_per_run, "openai_model": g.openai_model,
             "reports_enabled": g.reports_enabled, "report_recipient": g.report_recipient,
             "report_sender": g.report_sender, "last_run_at": g.last_run_at, "last_run_summary": g.last_run_summary,
-            "openai_configured": bool(s.openai_api_key), "live_sending": s.provider_mode != "mock"}
+            "openai_configured": has_key, "openai_key_hint": g.openai_key_hint if g.openai_key_ciphertext else "",
+            "openai_key_from_server": bool(s.openai_api_key), "live_sending": s.provider_mode != "mock"}
 
 
 def _lead(db: Session, brand_id: int, lead_id: int) -> OutreachLead:
@@ -408,6 +410,25 @@ def put_global(body: GlobalIn, admin: User = Depends(require_super_admin), db: S
     for k, v in data.items():
         setattr(g, k, v)
     audit(db, "outreach.global_updated", user_id=admin.id, **{k: str(v)[:80] for k, v in data.items()})
+    db.commit()
+    return global_out(g)
+
+
+class OpenAIKeyIn(BaseModel):
+    key: str | None = Field(default=None, max_length=400)  # empty/None removes the saved key
+
+
+@global_router.put("/openai-key")
+def set_openai_key(body: OpenAIKeyIn, admin: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    """Save the OpenAI API key used for drafts. Stored encrypted; never returned (only its last 4 characters)."""
+    from app.services.crypto import encrypt
+    g = engine.global_state(db)
+    key = (body.key or "").strip()
+    if key and (not key.startswith("sk-") or len(key) < 20):
+        raise HTTPException(400, "That doesn't look like an OpenAI API key (it starts with sk-)")
+    g.openai_key_ciphertext = encrypt(key) if key else None
+    g.openai_key_hint = key[-4:] if key else ""
+    audit(db, "outreach.openai_key_set" if key else "outreach.openai_key_removed", user_id=admin.id)
     db.commit()
     return global_out(g)
 

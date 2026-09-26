@@ -60,6 +60,26 @@ def update_sender(sender_id: int, body: SenderUpdate, ctx: BrandCtx = Depends(br
     return s
 
 
+@router.delete("/{sender_id}", status_code=204)
+def delete_sender(sender_id: int, ctx: BrandCtx = Depends(brand_ctx), db: Session = Depends(get_db)):
+    """Remove an account. Accounts that already sent or received real messages are kept for history:
+    pause or disconnect those instead."""
+    from sqlalchemy import func
+
+    from app.models import InboundMessage, OutboundMessage
+    ctx.require(Role.BRAND_ADMIN)
+    s = _get(db, ctx.brand_id, sender_id)
+    used = db.scalar(select(func.count()).select_from(OutboundMessage).where(
+        OutboundMessage.sender_account_id == s.id, OutboundMessage.status.in_(("sent", "delivered", "read")))) or 0
+    used += db.scalar(select(func.count()).select_from(InboundMessage).where(InboundMessage.sender_account_id == s.id)) or 0
+    if used and s.provider != "mock":
+        raise HTTPException(409, "This account has message history, so it can't be deleted. Pause or disconnect it instead.")
+    audit(db, "sender.deleted", user_id=ctx.user.id, brand_id=ctx.brand_id, entity_type="sender", entity_id=s.id,
+          address=s.address)
+    db.delete(s)
+    db.commit()
+
+
 @router.post("/{sender_id}/health-check", response_model=SenderOut)
 def health_check(sender_id: int, ctx: BrandCtx = Depends(brand_ctx), db: Session = Depends(get_db)):
     s = _get(db, ctx.brand_id, sender_id)
