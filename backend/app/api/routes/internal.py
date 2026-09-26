@@ -25,6 +25,31 @@ def dispatch_sweep(limit: int = 200):
     return {"processed": len(ids), "outcomes": outcomes}
 
 
+@router.post("/outreach/tick")
+def outreach_tick():
+    """The Cloud Run email-sender job: one pass over all brands, at most one email per brand."""
+    from app.services.outreach import engine
+    with session_factory()() as db:
+        try:
+            results = engine.run_unified(db)
+        except engine.RunLocked:
+            return {"status": "locked"}
+        return {"status": "ok", "sent": sum(1 for r in results if r["sent"]),
+                "brands": [{"brand": r["brand"], "sent": r["sent"], "skipped": r["skipped"], "errors": r["errors"]}
+                           for r in results]}
+
+
+@router.post("/outreach/report/{slot}")
+def outreach_report(slot: str):
+    from fastapi import HTTPException
+
+    from app.services.outreach import reports as outreach_reports
+    if slot not in ("morning", "evening"):
+        raise HTTPException(404, "unknown slot")
+    with session_factory()() as db:
+        return outreach_reports.run_scheduled(db, slot)
+
+
 @router.post("/follow-ups/sweep")
 def followup_sweep():
     with session_factory()() as db, db.begin():

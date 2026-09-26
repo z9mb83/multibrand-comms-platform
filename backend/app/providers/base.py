@@ -17,6 +17,8 @@ class SendRequest:
     in_reply_to: str | None = None
     references: str | None = None
     list_unsubscribe: str | None = None
+    cc: str | None = None
+    plain_text: bool = False  # never add an HTML part (outreach mail is plain text)
     sender_config: dict = field(default_factory=dict)
     secret_ref: str | None = None
     attachments: list[tuple[str, bytes, str]] = field(default_factory=list)  # (filename, data, mime)

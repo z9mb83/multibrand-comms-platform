@@ -69,6 +69,31 @@ def require_super_admin(user: User = Depends(current_user)) -> User:
     return user
 
 
+GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+_github_jwks = None
+
+
+def github_scheduler_token_ok(token: str, jwks_client=None) -> bool:
+    """Accept a GitHub Actions OIDC token minted by this repository's default branch."""
+    s = get_settings()
+    if not s.scheduler_github_repo:
+        return False
+    global _github_jwks
+    try:
+        import jwt as pyjwt
+        if jwks_client is None:
+            if _github_jwks is None:
+                _github_jwks = pyjwt.PyJWKClient(f"{GITHUB_OIDC_ISSUER}/.well-known/jwks")
+            jwks_client = _github_jwks
+        key = jwks_client.get_signing_key_from_jwt(token).key
+        claims = pyjwt.decode(token, key, algorithms=["RS256"], audience=s.scheduler_oidc_audience,
+                              issuer=GITHUB_OIDC_ISSUER)
+    except Exception:  # noqa: BLE001 - any verification problem means "not this caller"
+        return False
+    return (claims.get("repository", "").lower() == s.scheduler_github_repo.lower()
+            and claims.get("ref") == "refs/heads/main")
+
+
 def internal_auth(x_internal_token: str | None = Header(default=None),
                   authorization: str | None = Header(default=None)) -> None:
     """Local/test: shared token. Production: verify Google OIDC token from Cloud Tasks / Scheduler."""
@@ -76,6 +101,8 @@ def internal_auth(x_internal_token: str | None = Header(default=None),
     from app.core.config import LOCAL_INTERNAL
     if x_internal_token and hmac.compare_digest(x_internal_token, s.internal_token) and (
             s.app_env != "production" or s.internal_token != LOCAL_INTERNAL):
+        return
+    if authorization and authorization.startswith("Bearer ") and github_scheduler_token_ok(authorization[7:]):
         return
     if authorization and authorization.startswith("Bearer ") and s.internal_oidc_audience:
         try:

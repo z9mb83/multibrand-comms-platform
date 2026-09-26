@@ -40,6 +40,8 @@ def build_mime(req: SendRequest) -> tuple[EmailMessage, str]:
     msg = EmailMessage()
     msg["From"] = formataddr((req.from_name or "", req.from_address))
     msg["To"] = req.to_address
+    if req.cc:
+        msg["Cc"] = req.cc
     msg["Subject"] = req.subject or ""
     message_id = make_msgid(domain=req.from_address.split("@")[-1])
     msg["Message-ID"] = message_id
@@ -51,7 +53,7 @@ def build_mime(req: SendRequest) -> tuple[EmailMessage, str]:
         msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
     msg["X-Idempotency-Key"] = req.idempotency_key
     msg.set_content(req.body or "")
-    if req.body and "<" in req.body:
+    if req.body and "<" in req.body and not req.plain_text:
         msg.add_alternative(req.body, subtype="html")
     for filename, data, mime in req.attachments:
         maintype, subtype = mime.split("/", 1)
@@ -89,6 +91,26 @@ class GmailProvider:
             return HealthResult(True, "ok")
         except Exception as exc:
             return HealthResult(False, str(exc))
+
+    @staticmethod
+    def profile_email(secret_ref: str | None) -> str:
+        token = _access_token(secret_ref)
+        resp = httpx.get(f"{API}/profile", headers={"Authorization": f"Bearer {token}"}, timeout=20)
+        resp.raise_for_status()
+        return str(resp.json().get("emailAddress", "")).lower()
+
+    @staticmethod
+    def thread_metadata(secret_ref: str | None, thread_id: str, headers: list[str], token: str | None = None) -> dict:
+        """users.threads.get with format=metadata (reply check for the daily reports; bodies are not read)."""
+        token = token or _access_token(secret_ref)
+        resp = httpx.get(f"{API}/threads/{thread_id}", params=[("format", "metadata")] + [("metadataHeaders", h) for h in headers],
+                         headers={"Authorization": f"Bearer {token}"}, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+
+    @staticmethod
+    def access_token(secret_ref: str | None) -> str:
+        return _access_token(secret_ref)
 
     @staticmethod
     def list_history(secret_ref: str | None, start_history_id: str) -> dict:

@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     internal_base_url: str = "http://localhost:8000"
     internal_token: str = LOCAL_INTERNAL
     internal_oidc_audience: str = ""
+    # Scheduled runs from GitHub Actions authenticate with GitHub's OIDC token (no shared secret needed)
+    scheduler_github_repo: str = "linkwithmarketing-design/multibrand-comms-platform"
+    scheduler_oidc_audience: str = "comms-hub-scheduler"
 
     upload_dir: str = "./.uploads"
     default_country_code: str = "+91"
@@ -62,6 +65,10 @@ class Settings(BaseSettings):
     smtp_username: str = ""
     smtp_password: str = ""
     resend_api_key: str = ""
+    # Email outreach: OpenAI drafts (same as the Sheet automation's OPENAI_API_KEY / OPENAI_MODEL)
+    openai_api_key: str = ""
+    openai_model: str = ""
+
     otp_ttl_minutes: int = 10
     otp_max_attempts: int = 5
 
@@ -86,6 +93,8 @@ class Settings(BaseSettings):
             self.default_timezone = "Asia/Kolkata"
         if unset(self.mailer) or self.mailer not in ("log", "smtp", "resend"):
             self.mailer = "log"
+        if unset(self.openai_api_key):
+            self.openai_api_key = ""
         if unset(self.google_client_id) or unset(self.google_client_secret):
             self.google_client_id = self.google_client_secret = ""
         if unset(self.default_country_code):
