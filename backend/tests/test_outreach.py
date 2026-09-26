@@ -531,7 +531,7 @@ def test_create_brand_with_profile_then_edit_and_delete(client, db, world):
     lead(db, brand, "l@x.io")
     db.commit()
     assert client.post(f"/api/brands/{bid}/delete", headers=h, json={"confirm_name": "wrong"}).status_code == 400
-    assert client.post(f"/api/brands/{bid}/delete", headers=auth(world["agent_a"]), json={"confirm_name": "Property Experts Group"}).status_code == 403
+    assert client.post(f"/api/brands/{bid}/delete", headers=auth(world["agent_a"]), json={"confirm_name": "Property Experts Group"}).status_code == 403  # noqa: E501
     assert client.post(f"/api/brands/{bid}/delete", headers=h, json={"confirm_name": "Property Experts Group"}).status_code == 200
     db.expire_all()
     assert db.query(Brand).filter(Brand.id == bid).count() == 0

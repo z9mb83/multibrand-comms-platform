@@ -55,6 +55,32 @@ def list_for(db: Session, brand_id: int) -> list[dict]:
     return [_out(r, r.id in connected) for r in rows]
 
 
+def ensure_master(db: Session, brand_id: int) -> None:
+    """Every brand with a real mailbox has exactly one real master: if none is marked (e.g. only demo mailboxes were
+    master, or the master was removed), the oldest real mailbox becomes master. The outreach CC follows the master."""
+    from app.services.outreach.engine import settings_for
+    boxes = db.scalars(select(SenderAccount).where(SenderAccount.brand_id == brand_id, SenderAccount.channel == "email",
+                                                   SenderAccount.is_notification_sender.is_(False))
+                       .order_by(SenderAccount.id)).all()
+    real = [b for b in boxes if b.provider != "mock"]
+    for b in boxes:
+        if b.provider == "mock" and b.is_master and real:
+            b.is_master = False
+    master = next((b for b in real if b.is_master), None)
+    if master is None and real:
+        master = real[0]
+        master.is_master = True
+        master.rotation_order = 0
+    if master is not None:
+        brand = db.get(Brand, brand_id)
+        old = (brand.master_email or "").lower()
+        brand.master_email = master.address
+        st = settings_for(db, brand_id)
+        mock_addrs = {b.address.lower() for b in boxes if b.provider == "mock"}
+        if not st.cc_email or st.cc_email.lower() in mock_addrs or st.cc_email.lower() == old:
+            st.cc_email = master.address
+
+
 def add_mailbox(db: Session, brand: Brand, address: str, role: str, user_id: int, display_name: str | None = None,
                 daily_limit: int = 100) -> SenderAccount:
     address = address.lower()
@@ -73,12 +99,15 @@ def add_mailbox(db: Session, brand: Brand, address: str, role: str, user_id: int
                         provider_config={})
     db.add(acc)
     db.flush()
+    ensure_master(db, brand.id)
     audit(db, "mailbox.added", user_id=user_id, brand_id=brand.id, entity_type="sender", entity_id=acc.id, role=role)
     return acc
 
 
 @router.get("")
 def list_mailboxes(ctx: BrandCtx = Depends(brand_ctx), db: Session = Depends(get_db)):
+    ensure_master(db, ctx.brand_id)  # repairs brands whose only master was a demo mailbox
+    db.commit()
     return list_for(db, ctx.brand_id)
 
 
@@ -98,7 +127,7 @@ def make_master(sid: int, ctx: BrandCtx = Depends(brand_ctx), db: Session = Depe
     for m in db.scalars(select(SenderAccount).where(SenderAccount.brand_id == ctx.brand_id, SenderAccount.is_master)):
         m.is_master = False
     acc.is_master = True
-    db.get(Brand, ctx.brand_id).master_email = acc.address
+    ensure_master(db, ctx.brand_id)
     db.commit()
     return list_for(db, ctx.brand_id)
 

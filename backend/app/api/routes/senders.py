@@ -77,6 +77,10 @@ def delete_sender(sender_id: int, ctx: BrandCtx = Depends(brand_ctx), db: Sessio
     audit(db, "sender.deleted", user_id=ctx.user.id, brand_id=ctx.brand_id, entity_type="sender", entity_id=s.id,
           address=s.address)
     db.delete(s)
+    db.flush()
+    if s.channel == "email":
+        from app.api.routes.mailboxes import ensure_master
+        ensure_master(db, ctx.brand_id)
     db.commit()
 
 

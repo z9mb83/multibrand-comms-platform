@@ -289,3 +289,22 @@ def test_only_super_admins_invite_and_removed_users_cannot_sign_in(client, db, w
     assert DEV_OUTBOX == []
     # re-inviting brings them back
     assert client.post("/api/users", headers=h, json={"email": "gone@z.io", "full_name": "G"}).status_code == 201
+
+
+def test_first_real_mailbox_becomes_master_when_only_demo_ones_exist(client, db, world):
+    """Seeded brands only had demo mailboxes; the first real one added must become the master and the CC."""
+    from app.services.outreach.engine import settings_for
+    a = world["a"]
+    h = auth(world["admin"])
+    sub = client.post(f"/api/brands/{a.id}/mailboxes", headers=h, json={"address": "linkwithmarketing@gmail.com", "role": "sub"}).json()
+    boxes = {m["address"]: m for m in client.get(f"/api/brands/{a.id}/mailboxes", headers=h).json()}
+    assert boxes["linkwithmarketing@gmail.com"]["role"] == "master"
+    assert settings_for(db, a.id).cc_email == "linkwithmarketing@gmail.com"
+    second = client.post(f"/api/brands/{a.id}/mailboxes", headers=h, json={"address": "info@marketing.io", "role": "sub"}).json()
+    client.post(f"/api/brands/{a.id}/mailboxes/{second['id']}/make-master", headers=h)
+    db.expire_all()
+    assert settings_for(db, a.id).cc_email == "info@marketing.io"
+    # removing the master promotes the remaining real mailbox
+    assert client.delete(f"/api/brands/{a.id}/senders/{second['id']}", headers=h).status_code == 204
+    boxes = {m["address"]: m for m in client.get(f"/api/brands/{a.id}/mailboxes", headers=h).json()}
+    assert boxes["linkwithmarketing@gmail.com"]["role"] == "master" and sub["id"]
