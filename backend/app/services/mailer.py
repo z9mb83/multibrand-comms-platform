@@ -3,6 +3,8 @@
 MAILER=log     development only: nothing is sent, the message is kept in memory/logged
 MAILER=smtp    any SMTP server (e.g. Google Workspace / Gmail with an app password, SES, Zoho)
 MAILER=resend  Resend HTTP API (RESEND_API_KEY)
+Otherwise, if the Super Admin picked a Google-connected mailbox under Settings ("Send sign-in codes from"),
+codes are sent from that Gmail mailbox through the Gmail API. No SMTP password is needed.
 """
 import logging
 import smtplib
@@ -21,21 +23,46 @@ class MailerError(RuntimeError):
     pass
 
 
-def can_deliver() -> bool:
+def code_sender(db):
+    """The connected Gmail mailbox chosen to send codes, or None."""
+    if db is None:
+        return None
+    from app.models import AppSettings, SenderAccount
+    row = db.get(AppSettings, 1)
+    acc = db.get(SenderAccount, row.code_sender_id) if row and row.code_sender_id else None
+    if acc and acc.provider == "gmail" and acc.connection_status == "connected" and acc.secret_ref:
+        return acc
+    return None
+
+
+def can_deliver(db=None) -> bool:
     """True when real email delivery is configured (or we're not in production)."""
     s = get_settings()
     if s.mailer == "smtp":
         return bool(s.smtp_host and s.mail_from)
     if s.mailer == "resend":
         return bool(s.resend_api_key and s.mail_from)
-    return s.app_env != "production"
+    return code_sender(db) is not None or s.app_env != "production"
 
 
-def send_email(to: str, subject: str, text: str, html: str | None = None) -> None:
+def _send_via_gmail(acc, to: str, subject: str, text: str) -> None:
+    from app.providers.base import SendRequest
+    from app.providers.gmail import GmailProvider
+    res = GmailProvider().send(SendRequest(channel="email", from_address=acc.address, from_name="Comms Hub", to_address=to,
+                                           subject=subject, body=text, plain_text=True, secret_ref=acc.secret_ref))
+    if not res.ok:
+        raise MailerError(f"Gmail delivery from {acc.address} failed")
+
+
+def send_email(to: str, subject: str, text: str, html: str | None = None, db=None) -> None:
     s = get_settings()
     if s.mailer == "log":
+        acc = code_sender(db)
+        if acc is not None:
+            _send_via_gmail(acc, to, subject, text)
+            return
         if s.app_env == "production":
-            raise MailerError("No email service configured (set MAILER=smtp or MAILER=resend)")
+            raise MailerError("Email isn't set up yet. The Super Admin can pick a mailbox under Settings → Sign-in codes.")
         DEV_OUTBOX.append({"to": to, "subject": subject, "text": text})
         log.warning("MAILER=log: email to %s not sent (subject=%r)", to, subject)
         return

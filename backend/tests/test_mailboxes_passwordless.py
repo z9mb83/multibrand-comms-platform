@@ -46,14 +46,11 @@ def test_owner_signs_up_with_email_code(client, db):
     assert client.get("/api/auth/providers").json()["needs_owner"] is False
 
 
-def test_second_person_cannot_become_owner(client, db):
+def test_email_sign_in_for_unknown_address_points_to_sign_up(client, db):
     db.add(User(email="owner@x.io", full_name="O", password_hash="x", is_super_admin=True))
     db.commit()
-    r = client.post("/api/auth/email/start", json={"email": "attacker@evil.io"}).json()
-    assert DEV_OUTBOX == []  # nothing sent to unknown addresses
-    bad = client.post("/api/auth/email/verify", json={"challenge_id": r["challenge_id"], "code": "123456"})
-    assert bad.status_code == 401
-    assert db.query(User).count() == 1
+    r = client.post("/api/auth/email/start", json={"email": "someone@new.io"})
+    assert r.status_code == 404 and "Sign up" in r.json()["detail"] and DEV_OUTBOX == []
 
 
 def test_passwordless_login_for_existing_user(client, db):
@@ -64,13 +61,65 @@ def test_passwordless_login_for_existing_user(client, db):
     assert ok.status_code == 200 and ok.json()["access_token"]
 
 
-def test_unknown_and_known_emails_look_the_same(client, db):
-    db.add(User(email="team@x.io", full_name="T", password_hash="x"))
+# ------------------------------------------------------------------ open sign-up: email -> code -> password
+def _signup(client, email, name="New Person", password="a-strong-pass"):
+    st = client.post("/api/auth/signup/start", json={"email": email})
+    assert st.status_code == 200, st.text
+    v = client.post("/api/auth/signup/verify", json={"challenge_id": st.json()["challenge_id"], "code": code_for(email.lower())})
+    assert v.status_code == 200, v.text
+    return client.post("/api/auth/signup/complete", json={"signup_token": v.json()["signup_token"], "full_name": name,
+                                                          "password": password}), v.json()
+
+
+def test_first_sign_up_becomes_super_admin(client, db):
+    r, v = _signup(client, "Admin@99MarketingServices.com", "Group Owner")
+    assert r.status_code == 201 and v["owner"] is True
+    me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {r.json()['access_token']}"}).json()
+    assert me["is_super_admin"]
+    assert client.post("/api/auth/login", json={"email": "admin@99marketingservices.com",
+                                                "password": "a-strong-pass"}).status_code == 200
+
+
+def test_anyone_can_sign_up_and_waits_for_access(client, db, world):
+    r, v = _signup(client, "newhire@gmail.com")
+    assert r.status_code == 201 and v["owner"] is False
+    h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    me = client.get("/api/auth/me", headers=h).json()
+    assert not me["is_super_admin"] and me["brands"] == []
+    assert client.get(f"/api/brands/{world['a'].id}/outreach", headers=h).status_code == 403
+    uid = me["id"]
+    ok = client.put(f"/api/users/{uid}/access", headers=auth(world["admin"]), json={"brand_id": world["a"].id, "role": "agent"})
+    assert ok.status_code == 200
+    assert [b["id"] for b in client.get("/api/auth/me", headers=h).json()["brands"]] == [world["a"].id]
+
+
+def test_sign_up_rules(client, db, world):
+    assert client.post("/api/auth/signup/start", json={"email": "admin@test.io"}).status_code == 409  # exists
+    st = client.post("/api/auth/signup/start", json={"email": "x@y.io"}).json()
+    assert client.post("/api/auth/signup/verify", json={"challenge_id": st["challenge_id"], "code": "000000"}).status_code == 401
+    assert client.post("/api/auth/signup/complete", json={"signup_token": "forged", "full_name": "X",
+                                                          "password": "a-strong-pass"}).status_code == 401
+    r, _ = _signup(client, "short@y.io", password="short")
+    assert r.status_code == 422  # password too short; nothing created
+    assert db.query(User).filter(User.email == "short@y.io").count() == 0
+
+
+def test_codes_can_be_sent_from_a_connected_gmail_mailbox(client, db, world, monkeypatch):
+    from app.core.config import get_settings
+    from app.providers import gmail
+    from app.providers.base import SendResult
+    sent = []
+    monkeypatch.setattr(gmail.GmailProvider, "send", lambda self, req: sent.append(req) or SendResult(ok=True, provider_message_id="m"))
+    monkeypatch.setattr(get_settings(), "app_env", "production")
+    assert client.get("/api/auth/providers").json()["email_codes_available"] is False
+    acc = world["senders_a"][0]
+    acc.provider, acc.secret_ref = "gmail", f"db:{acc.id}"
     db.commit()
-    a = client.post("/api/auth/email/start", json={"email": "team@x.io"})
-    b = client.post("/api/auth/email/start", json={"email": "nobody@x.io"})
-    assert a.status_code == b.status_code == 200
-    assert set(a.json()) == set(b.json()) and b.json()["mfa_required"] is True
+    h = auth(world["admin"])
+    assert client.put("/api/auth/code-sender", headers=h, json={"sender_id": acc.id}).json()["working"] is True
+    assert client.get("/api/auth/providers").json()["email_codes_available"] is True
+    assert client.post("/api/auth/signup/start", json={"email": "someone@new.io"}).status_code == 200
+    assert sent[0].from_address == acc.address and sent[0].to_address == "someone@new.io"
 
 
 # ------------------------------------------------------------------ brands + mailboxes
@@ -235,8 +284,8 @@ def test_only_super_admins_invite_and_removed_users_cannot_sign_in(client, db, w
     uid = client.post("/api/users", headers=h, json={"email": "gone@z.io", "full_name": "G"}).json()["id"]
     assert client.delete(f"/api/users/{uid}", headers=h).status_code == 204
     assert client.delete(f"/api/users/{world['admin'].id}", headers=h).status_code == 400
-    start = client.post("/api/auth/email/start", json={"email": "gone@z.io"}).json()
+    assert client.post("/api/auth/email/start", json={"email": "gone@z.io"}).status_code == 404
+    assert client.post("/api/auth/signup/start", json={"email": "gone@z.io"}).status_code == 409  # removed: no self-return
     assert DEV_OUTBOX == []
-    assert client.post("/api/auth/email/verify", json={"challenge_id": start["challenge_id"], "code": "000000"}).status_code == 401
     # re-inviting brings them back
     assert client.post("/api/users", headers=h, json={"email": "gone@z.io", "full_name": "G"}).status_code == 201

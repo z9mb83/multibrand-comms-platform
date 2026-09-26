@@ -20,6 +20,27 @@ const ROLES = [
 ];
 const roleLabel = (r: string) => ROLES.find((x) => x.v === r)?.l ?? r;
 
+function GiveAccess({ m, brands, onDone }: { m: Member; brands: { id: number; name: string }[]; onDone: (msg: string | null, err?: string) => void }) {
+  const [brandId, setBrandId] = useState(String(brands[0]?.id ?? ""));
+  const [role, setRole] = useState("agent");
+  const give = async (json: object) => {
+    try { await api(`/users/${m.id}/access`, { method: "PUT", json }); onDone(`Access updated for ${m.email}.`); }
+    catch (e) { onDone(null, (e as Error).message); }
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <Select className="h-8 w-40" value={brandId} onChange={(e) => setBrandId(e.target.value)}>
+        {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+      </Select>
+      <Select className="h-8 w-32" value={role} onChange={(e) => setRole(e.target.value)}>
+        {ROLES.map((r) => <option key={r.v} value={r.v}>{r.l}</option>)}
+      </Select>
+      <Button size="sm" variant="outline" disabled={!brandId} onClick={() => give({ brand_id: Number(brandId), role })}>Add to brand</Button>
+      {!m.is_super_admin && <Button size="sm" variant="ghost" onClick={() => give({ is_super_admin: true })}>Make Super Admin</Button>}
+    </div>
+  );
+}
+
 export default function TeamPage() {
   const { me, brands } = useApp();
   const { data, error, reload } = usePoll<Member[]>(me?.is_super_admin ? "/users/team" : null, 0);
@@ -58,7 +79,7 @@ export default function TeamPage() {
 
   return (
     <>
-      <PageHeader title="Team" description="Add people to your brand group. They sign up with the exact email you enter here." />
+      <PageHeader title="Team" description="Anyone can create an account on the Sign up tab; it starts with no access. Give access below, or add people in advance by email." />
       <Card className="mb-6">
         <CardHeader>
           <CardTitle className="text-base">Add a person</CardTitle>
@@ -66,7 +87,7 @@ export default function TeamPage() {
         </CardHeader>
         <CardContent>
           <form onSubmit={invite} className="grid gap-3 md:grid-cols-2">
-            <Field label="Email"><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@99marketingservices.com" required /></Field>
+            <Field label="Email"><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" required /></Field>
             <Field label="Full name"><Input value={name} onChange={(e) => setName(e.target.value)} required /></Field>
             <Field label="Access">
               <Select value={access} onChange={(e) => setAccess(e.target.value as "super" | "brand")}>
@@ -101,7 +122,7 @@ export default function TeamPage() {
       <Card>
         <CardContent className="p-0">
           <Table>
-            <THead><TR><TH>Name</TH><TH>Email</TH><TH>Access</TH><TH>Google</TH><TH /></TR></THead>
+            <THead><TR><TH>Name</TH><TH>Email</TH><TH>Access</TH><TH>Google</TH><TH>Give access</TH><TH /></TR></THead>
             <TBody>
               {(data ?? []).map((m) => (
                 <TR key={m.id}>
@@ -110,9 +131,11 @@ export default function TeamPage() {
                   <TD>
                     {m.is_super_admin ? <Badge tone="blue">Super Admin</Badge>
                       : m.brands.length ? m.brands.map((b) => <Badge key={b.brand_id} tone="gray" className="mr-1">{b.brand} · {roleLabel(b.role)}</Badge>)
-                        : <span className="text-xs text-muted-foreground">No brand yet</span>}
+                        : <Badge tone="amber">Waiting for access</Badge>}
                   </TD>
                   <TD>{m.google_linked ? <Badge tone="green">Linked</Badge> : <span className="text-xs text-muted-foreground">Not yet</span>}</TD>
+                  <TD>{!m.is_you && !m.is_super_admin && <GiveAccess m={m} brands={brands}
+                    onDone={(ok, e) => { setMsg(ok); setErr(e ?? null); reload(); }} />}</TD>
                   <TD className="text-right">
                     {!m.is_you && <Button size="sm" variant="ghost" onClick={() => remove(m)}>Remove</Button>}
                   </TD>

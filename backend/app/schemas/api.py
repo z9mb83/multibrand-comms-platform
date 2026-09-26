@@ -43,6 +43,17 @@ class EmailStartIn(BaseModel):
     email: EmailStr
 
 
+class SignupVerifyIn(BaseModel):
+    challenge_id: str
+    code: str = Field(min_length=6, max_length=6)
+
+
+class SignupCompleteIn(BaseModel):
+    signup_token: str
+    full_name: str = Field(min_length=1, max_length=160)
+    password: str = Field(min_length=10, max_length=200)
+
+
 class EmailVerifyIn(BaseModel):
     challenge_id: str
     code: str = Field(min_length=6, max_length=6)

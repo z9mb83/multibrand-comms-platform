@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.security import hash_password
 from app.models import AuthChallenge, User
 from app.services.common import DomainError, audit, now_utc
 from app.services.mailer import MailerError, can_deliver, send_email
@@ -45,6 +46,7 @@ PURPOSE_TEXT = {
     "login": ("sign in to your account", "If you didn't try to sign in, change your password and tell your administrator."),
     "email_login": ("sign in to your account", "If you didn't try to sign in, you can ignore this email."),
     "signup_owner": ("create the owner account", "If you didn't request this, you can ignore this email."),
+    "signup": ("create your Comms Hub account", "If you didn't request this, you can ignore this email."),
     "enable_mfa": ("turn on email codes for your account", "If this wasn't you, tell your administrator."),
     "disable_mfa": ("turn off email codes for your account", "If this wasn't you, tell your administrator."),
     "verify_mailbox": ("confirm this mailbox for sending from Comms Hub",
@@ -79,7 +81,7 @@ def issue_code(db: Session, user: User | None, purpose: str, method: str = "pass
     html = (f"<p>Your Comms Hub code is</p><p style='font-size:28px;font-weight:700;letter-spacing:6px'>{code}</p>"
             f"<p>Use it to {what}. It expires in {s.otp_ttl_minutes} minutes.</p><p style='color:#666'>{footer}</p>")
     try:
-        send_email(target, f"{code} is your Comms Hub code", text, html)
+        send_email(target, f"{code} is your Comms Hub code", text, html, db=db)
     except MailerError as exc:
         raise DomainError(f"Could not send the code: {exc}", 503) from exc
     audit(db, "auth.otp_sent", user_id=user.id if user else None, purpose=purpose)
@@ -122,8 +124,27 @@ def resend_code(db: Session, challenge_id: str) -> AuthChallenge:
     return issue_code(db, user, ch.purpose, ch.method, email=ch.email, sender_account_id=ch.sender_account_id)
 
 
-def mfa_available() -> bool:
-    return can_deliver()
+def mfa_available(db=None) -> bool:
+    return can_deliver(db)
+
+
+SIGNUP_TOKEN_TTL = 20 * 60
+
+
+def signup_token(email: str, owner: bool) -> str:
+    """Proof that this browser just verified `email` with a code; exchanged for the account once a password is chosen."""
+    return jwt.encode({"e": email, "o": owner, "p": "signup", "exp": int(time.time()) + SIGNUP_TOKEN_TTL},
+                      get_settings().jwt_secret, algorithm="HS256")
+
+
+def read_signup_token(token: str) -> tuple[str, bool]:
+    try:
+        data = jwt.decode(token, get_settings().jwt_secret, algorithms=["HS256"])
+    except jwt.PyJWTError as exc:
+        raise DomainError("Your verification expired. Start again.", 401) from exc
+    if data.get("p") != "signup":
+        raise DomainError("Your verification expired. Start again.", 401)
+    return data["e"], bool(data.get("o"))
 
 
 # ----------------------------------------------------------------------------- Google
@@ -164,7 +185,7 @@ GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send", "https://www.googl
 
 
 def google_start(kind: str = "login", *, user_id: int | None = None, sender_account_id: int | None = None,
-                 login_hint: str | None = None) -> tuple[str, str]:
+                 login_hint: str | None = None, mode: str = "signin") -> tuple[str, str]:
     """Returns (authorization URL, browser-binding value for an HttpOnly cookie).
     kind="login": sign in / owner sign-up.  kind="mailbox": connect a sending mailbox (Gmail API access)."""
     if not google_enabled():
@@ -172,7 +193,7 @@ def google_start(kind: str = "login", *, user_id: int | None = None, sender_acco
     binding = secrets.token_urlsafe(24)
     nonce = secrets.token_urlsafe(16)
     state = _sign({"b": hashlib.sha256(binding.encode()).hexdigest(), "n": nonce, "k": kind, "u": user_id,
-                   "s": sender_account_id, "exp": int(time.time()) + STATE_TTL})
+                   "s": sender_account_id, "m": mode, "exp": int(time.time()) + STATE_TTL})
     params = {"client_id": get_settings().google_client_id, "redirect_uri": redirect_uri(), "response_type": "code",
               "scope": "openid email profile", "state": state, "nonce": nonce, "prompt": "select_account"}
     if kind == "mailbox":
@@ -243,8 +264,15 @@ def google_callback(db: Session, *, code: str, state: str, binding: str | None, 
             if bootstrap.needs_setup(db):
                 return bootstrap.create_owner(db, email=email, full_name=claims.get("name") or email.split("@")[0],
                                               google_sub=claims["sub"], via="google")
+            if data.get("m") == "signup":
+                user = User(email=email, full_name=claims.get("name") or email.split("@")[0], google_sub=claims["sub"],
+                            is_super_admin=False, password_hash=hash_password(secrets.token_urlsafe(32)))
+                db.add(user)
+                db.flush()
+                audit(db, "auth.signed_up", user_id=user.id, via="google")
+                return user
             audit(db, "auth.google_unknown_user", email_domain=email.split("@")[-1])
-            raise DomainError("No Comms Hub account uses this Google address. Ask your administrator to add you.", 403)
+            raise DomainError(f"There is no account for {email} yet. Open the Sign up tab to create one.", 404)
         if user.google_sub and user.google_sub != claims["sub"]:
             raise DomainError("This account is linked to a different Google account.", 403)
         user.google_sub = claims["sub"]

@@ -155,14 +155,24 @@ def test_google_links_existing_user_by_verified_email(db, google_on):
     assert got.id == u.id and got.google_sub == "g-123"
 
 
-def test_google_never_creates_accounts_once_an_owner_exists(db, google_on):
+def test_google_sign_in_does_not_create_accounts(db, google_on):
     make_user(db, email="owner@brand.io")
     state, binding, _ = _start()
     with pytest.raises(DomainError) as e:
         auth_flows.google_callback(db, code="c", state=state, binding=binding, verify=_claims(email="stranger@x.io"),
                                    exchange=lambda c: {"id_token": "tok"})
-    assert e.value.status_code == 403
+    assert e.value.status_code == 404 and "Sign up" in str(e.value)
     assert db.query(User).count() == 1
+
+
+def test_google_sign_up_creates_an_account_without_access(db, google_on):
+    from urllib.parse import unquote
+    make_user(db, email="owner@brand.io")
+    url, binding = auth_flows.google_start(mode="signup")
+    state = unquote(re.search(r"state=([^&]+)", url).group(1))
+    u = auth_flows.google_callback(db, code="c", state=state, binding=binding, verify=_claims(email="New@x.io"),
+                                   exchange=lambda c: {"id_token": "tok"})
+    assert u.email == "new@x.io" and not u.is_super_admin and u.memberships == []
 
 
 def test_first_google_account_becomes_owner_on_new_install(db, google_on):

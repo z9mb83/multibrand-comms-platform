@@ -2,7 +2,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import accessible_brand_ids, brand_role, current_user, require_super_admin
@@ -20,6 +20,8 @@ from app.schemas.api import (
     MfaStartIn,
     OtpVerifyIn,
     SetupIn,
+    SignupCompleteIn,
+    SignupVerifyIn,
     TokenOut,
     UserCreate,
     UserOut,
@@ -50,22 +52,101 @@ def _finish(db: Session, user: User, method: str) -> LoginOut:
 
 @router.get("/providers")
 def providers(db: Session = Depends(get_db)):
-    return {"google": auth_flows.google_enabled(), "email_codes_available": auth_flows.mfa_available(),
-            "needs_owner": bootstrap.needs_setup(db)}
+    return {"google": auth_flows.google_enabled(), "email_codes_available": auth_flows.mfa_available(db),
+            "needs_owner": bootstrap.needs_setup(db), "open_signup": True}
+
+
+# ------------------------------------------------------------------ sign up: email -> code -> password
+@router.post("/signup/start", response_model=LoginOut)
+def signup_start(body: EmailStartIn, db: Session = Depends(get_db)):
+    """Step 1: email a 6-digit code to prove the address. The very first account becomes the Super Admin."""
+    email = body.email.lower()
+    if bootstrap.needs_setup(db):
+        ch = auth_flows.issue_code(db, None, "signup_owner", "email", email=email)
+    else:
+        existing = db.scalars(select(User).where(func.lower(User.email) == email)).first()
+        if existing is not None:
+            raise HTTPException(409, "An account with this email already exists. Use the Sign in tab."
+                                if existing.is_active else "This account was removed. Ask your Super Admin to add you again.")
+        ch = auth_flows.issue_code(db, None, "signup", "email", email=email)
+    db.commit()
+    return LoginOut(mfa_required=True, challenge_id=ch.id, email_hint=_mask(email))
+
+
+@router.post("/signup/verify")
+def signup_verify(body: SignupVerifyIn, db: Session = Depends(get_db)):
+    """Step 2: check the code. Returns a short-lived token that allows choosing a password."""
+    ch = auth_flows.check_code(db, body.challenge_id, body.code, ("signup", "signup_owner"))
+    db.commit()
+    return {"signup_token": auth_flows.signup_token(ch.email, ch.purpose == "signup_owner"), "email": ch.email,
+            "owner": ch.purpose == "signup_owner"}
+
+
+@router.post("/signup/complete", response_model=TokenOut, status_code=201)
+def signup_complete(body: SignupCompleteIn, db: Session = Depends(get_db)):
+    """Step 3: create the account with a password. New accounts have no brand access until the Super Admin grants it."""
+    email, owner = auth_flows.read_signup_token(body.signup_token)
+    if owner:
+        user = bootstrap.create_owner(db, email=email, full_name=body.full_name.strip(), password=body.password,
+                                      via="email_code")
+    else:
+        db.execute(text("SELECT pg_advisory_xact_lock(4242003)"))
+        if db.scalar(select(User.id).where(func.lower(User.email) == email)):
+            raise HTTPException(409, "An account with this email already exists. Use the Sign in tab.")
+        user = User(email=email, full_name=body.full_name.strip(), password_hash=hash_password(body.password),
+                    is_super_admin=False)
+        db.add(user)
+        db.flush()
+        audit(db, "auth.signed_up", user_id=user.id, via="email_code")
+    user.last_login_at = now_utc()
+    db.commit()
+    return TokenOut(access_token=create_access_token(user.id))
+
+
+@router.get("/code-sender")
+def get_code_sender(_: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    from app.models import AppSettings, SenderAccount
+    from app.services.mailer import code_sender
+    row = db.get(AppSettings, 1)
+    options = db.scalars(select(SenderAccount).where(SenderAccount.channel == "email", SenderAccount.provider == "gmail",
+                                                     SenderAccount.connection_status == "connected")
+                         .order_by(SenderAccount.address)).all()
+    acc = code_sender(db)
+    s = get_settings()
+    return {"selected_id": row.code_sender_id if row else None, "working": acc is not None or s.mailer in ("smtp", "resend"),
+            "env_mailer": s.mailer if s.mailer in ("smtp", "resend") else None,
+            "options": [{"id": o.id, "address": o.address} for o in options]}
+
+
+@router.put("/code-sender")
+def put_code_sender(body: dict, admin: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    from app.models import AppSettings, SenderAccount
+    sid = body.get("sender_id")
+    if sid is not None:
+        acc = db.get(SenderAccount, int(sid))
+        if acc is None or acc.provider != "gmail" or acc.connection_status != "connected":
+            raise HTTPException(400, "Pick a mailbox that is connected with Google")
+    row = db.get(AppSettings, 1)
+    if row is None:
+        row = AppSettings(id=1)
+        db.add(row)
+    row.code_sender_id = int(sid) if sid is not None else None
+    audit(db, "auth.code_sender_set", user_id=admin.id, sender_id=sid)
+    db.commit()
+    return get_code_sender(admin, db)
 
 
 @router.post("/email/start", response_model=LoginOut)
 def email_start(body: EmailStartIn, db: Session = Depends(get_db)):
     """Passwordless: email a sign-in code. On a new installation this creates the owner account instead.
     Unknown addresses get the same response (no code is sent) so accounts can't be discovered."""
-    import uuid
     email = body.email.lower()
     if bootstrap.needs_setup(db):
         ch = auth_flows.issue_code(db, None, "signup_owner", "email", email=email)
     else:
         user = db.scalars(select(User).where(User.email == email)).first()
         if user is None or not user.is_active:
-            return LoginOut(mfa_required=True, challenge_id=str(uuid.uuid4()), email_hint=_mask(email))
+            raise HTTPException(404, f"There is no account for {email} yet. Open the Sign up tab to create one.")
         ch = auth_flows.issue_code(db, user, "email_login", "email")
     db.commit()
     return LoginOut(mfa_required=True, challenge_id=ch.id, email_hint=_mask(email))
@@ -113,8 +194,8 @@ def otp_resend(body: ChallengeIn, db: Session = Depends(get_db)):
 
 
 @router.get("/google/start")
-def google_start(request: Request):
-    url, binding = auth_flows.google_start()
+def google_start(request: Request, mode: str = "signin"):
+    url, binding = auth_flows.google_start(mode="signup" if mode == "signup" else "signin")
     resp = RedirectResponse(url, status_code=302)
     resp.set_cookie(BIND_COOKIE, binding, max_age=600, httponly=True, samesite="lax", path="/api/auth/google",
                     secure=get_settings().app_env == "production")
@@ -271,6 +352,35 @@ def team(admin: User = Depends(require_super_admin), db: Session = Depends(get_d
     return [{"id": u.id, "email": u.email, "full_name": u.full_name, "is_super_admin": u.is_super_admin,
              "google_linked": bool(u.google_sub), "is_you": u.id == admin.id, "brands": mems.get(u.id, [])}
             for u in rows]
+
+
+@users.put("/{user_id}/access", response_model=UserOut)
+def set_access(user_id: int, body: dict, admin: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    """Give an existing account access: Super Admin, or a role on one brand."""
+    from app.models import BrandMembership
+    from app.models.enums import Role
+    u = db.get(User, user_id)
+    if u is None or not u.is_active:
+        raise HTTPException(404, "user not found")
+    if body.get("is_super_admin") is not None:
+        if not body["is_super_admin"] and u.id == admin.id:
+            raise HTTPException(400, "You can't remove your own Super Admin access")
+        u.is_super_admin = bool(body["is_super_admin"])
+    if body.get("brand_id") is not None:
+        if db.get(Brand, int(body["brand_id"])) is None:
+            raise HTTPException(404, "brand not found")
+        role = body.get("role") or "viewer"
+        if role not in {r.value for r in Role}:
+            raise HTTPException(400, "invalid role")
+        m = db.scalars(select(BrandMembership).where(BrandMembership.brand_id == int(body["brand_id"]),
+                                                     BrandMembership.user_id == u.id)).first()
+        if m is None:
+            db.add(BrandMembership(user_id=u.id, brand_id=int(body["brand_id"]), role=role))
+        else:
+            m.role = role
+    audit(db, "user.access_set", user_id=admin.id, entity_type="user", entity_id=u.id, **{k: str(v) for k, v in body.items()})
+    db.commit()
+    return u
 
 
 @users.delete("/{user_id}", status_code=204)

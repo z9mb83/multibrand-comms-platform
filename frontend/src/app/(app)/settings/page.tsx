@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { useApp, usePoll } from "@/components/app-context";
+import { CodeSenderCard } from "@/components/code-sender-card";
 import { SecurityCard } from "@/components/security-card";
 import { ErrorNote, PageHeader } from "@/components/shell";
 import { Button } from "@/components/ui/button";
@@ -26,7 +27,7 @@ export default function SettingsPage() {
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => { if (data) setS(data); }, [data]);
   if (me && !me.is_super_admin) return (<><PageHeader title="Settings" /><SecurityCard /></>);
-  if (!s) return (<><PageHeader title="Settings" /><SecurityCard /></>);
+  if (!s) return (<><PageHeader title="Settings" />{me?.is_super_admin && <CodeSenderCard />}<SecurityCard /></>);
 
   const set = <K extends keyof S>(k: K, v: S[K]) => setS({ ...s, [k]: v });
   async function save(e: React.FormEvent) {
@@ -39,6 +40,7 @@ export default function SettingsPage() {
     <>
       <PageHeader title="Master Control Center" description="Reporting and notification settings for the Super Admin. Independent of marketing sender rotation." />
       <ErrorNote error={error || err} />
+      <CodeSenderCard />
       <SecurityCard />
       <form onSubmit={save} className="grid gap-5 lg:grid-cols-2">
         <Card>

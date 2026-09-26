@@ -88,7 +88,17 @@ export function Shell({ children }: { children: React.ReactNode }) {
             </button>
           </div>
         </header>
-        <main className="mx-auto w-full max-w-7xl flex-1 p-4 md:p-6">{children}</main>
+        <main className="mx-auto w-full max-w-7xl flex-1 p-4 md:p-6">
+          {me && !me.is_super_admin && brands.length === 0 ? (
+            <div className="mx-auto mt-16 max-w-md rounded-lg border bg-card p-6 text-center">
+              <h1 className="text-lg font-semibold">Your account is ready</h1>
+              <p className="mt-2 text-sm text-muted-foreground">
+                You&apos;re signed in as {me.email}. Your Super Admin now needs to give you access to a brand on the Team page.
+                Refresh this page once they have.
+              </p>
+            </div>
+          ) : children}
+        </main>
       </div>
     </div>
   );

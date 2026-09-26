@@ -103,3 +103,14 @@ class MessageTemplate(TimestampMixin, Base):
     external_template_id: Mapped[str | None] = mapped_column(String(120))
     approval_status: Mapped[str] = mapped_column(String(20), default="draft")  # draft|approved|rejected
     variables: Mapped[list] = mapped_column(JSONB, default=list)
+
+
+class AppSettings(Base):
+    """Single row (id=1) of installation-wide settings."""
+
+    __tablename__ = "app_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Connected Gmail mailbox that sends sign-up / sign-in codes (used when MAILER is not smtp/resend)
+    code_sender_id: Mapped[int | None] = mapped_column(ForeignKey("sender_accounts.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

@@ -13,11 +13,11 @@ from app.models.outreach import (
 )
 from app.models.reporting import MasterReport, MasterReportSettings, NotificationDelivery
 from app.models.senders import SenderAccount, SenderAssignment, SenderCredential, SenderRoutingState
-from app.models.tenancy import AuditLog, AuthChallenge, Brand, BrandMembership, MessageTemplate, User
+from app.models.tenancy import AppSettings, AuditLog, AuthChallenge, Brand, BrandMembership, MessageTemplate, User
 from app.models.workflow import DailyTask, FollowUpRule, FollowUpTask
 
 __all__ = [
-    "Base", "AuthChallenge", "Brand", "User", "BrandMembership", "AuditLog", "MessageTemplate",
+    "Base", "AppSettings", "AuthChallenge", "Brand", "User", "BrandMembership", "AuditLog", "MessageTemplate",
     "SenderAccount", "SenderRoutingState", "SenderAssignment", "SenderCredential",
     "Contact", "BrandContact", "ContactConsent", "Suppression",
     "ImportBatch", "ImportRow",
